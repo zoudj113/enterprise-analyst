@@ -50,11 +50,12 @@ FINANCIAL_KEYWORDS = {
     ],
     "revenue_breakdown": [
         "收入結構", "按產品", "按渠道", "按地區", "按類別",
-        "收入構成", "分類收入", "分部收入",
+        "收入構成", "分類收入", "分部收入", "收入明細",
         "產品類別劃分", "銷售渠道劃分",
-        "收入明細", "收入佔比",
-        "經銷渠道", "直營渠道", "經銷商",
-        "集換式卡牌", "玩具", "文具",
+        "收入明細", "收入佔比", "各板塊", "業務板塊",
+        "經銷渠道", "直營渠道", "經銷商", "分銷商",
+        "化学", "化學", "化工", "新材料", "能源",
+        "銷售模式", "下游", "產能", "產量", "銷量",
     ],
     "gross_margin": [
         "毛利", "毛利率", "分部毛利",
@@ -82,6 +83,8 @@ FINANCIAL_KEYWORDS = {
         "競爭格局", "市場份額", "排名",
         "核心競爭力", "優勢", "戰略",
         "品牌", "IP", "知識產權",
+        "產能", "生產基地", "一體化", "產業鏈",
+        "氯鹼", "碳三碳四", "濕電子", "化工集團",
     ],
     "risk_factors": [
         "風險因素", "風險", "不確定性",
@@ -113,4 +116,16 @@ MIN_FINANCIAL_DIGIT_THRESHOLD = 20
 
 # ── Year pattern for detecting fiscal years in the document ────────────
 
-YEAR_PATTERN = re.compile(r'(19|20)\d{2}年')
+YEAR_PATTERN = re.compile(r'(?:19|20)\d{2}年')
+
+# Pattern for identifying fiscal years from financial statement headings
+# e.g., "截至2023年、2024年及2025年12月31日止年度"
+FISCAL_YEAR_HEADING_PATTERN = re.compile(
+    r'截至\s*((?:(?:19|20)\d{2}\s*年[、，,及]?\s*)+)\s*12\s*月\s*31\s*日\s*止\s*年\s*度'
+)
+
+# Pattern for year columns in table headers
+# e.g., "2023年  2024年  2025年" appearing together on one line
+YEAR_COLUMNS_PATTERN = re.compile(
+    r'((?:(?:19|20)\d{2}\s*年\s*){2,})'
+)

@@ -132,17 +132,20 @@ def cmd_analyze(args):
     # Step 3: Parse financial data
     parser = FinancialParser(all_pages)
     metrics = parser.parse_all(args.pdf_path)
-    metrics.fiscal_years = sorted(set(
-        y for p in all_pages
-        for y in [m.group(1) for m in __import__('re').finditer(r'(20\d{2})年', p.text)]
-    ))
+    # Only use broad year scan as fallback if parser found nothing
+    if not metrics.fiscal_years:
+        metrics.fiscal_years = sorted(set(
+            y for p in all_pages
+            for y in [m.group(1) for m in __import__('re').finditer(r'(20\d{2})年', p.text)]
+        ))
 
     # Step 4: Output
     if args.format == "json":
         output = JSONOutput.to_json(metrics)
     else:
+        from .models import FinancialDocument
         output = MarkdownOutput.format_document_summary(
-            __import__('.models', fromlist=['FinancialDocument']).FinancialDocument(
+            FinancialDocument(
                 pdf_path=args.pdf_path,
                 total_pages=extractor.get_page_count(),
                 pages=all_pages,
