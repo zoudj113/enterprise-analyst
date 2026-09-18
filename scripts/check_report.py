@@ -50,11 +50,48 @@ FAILED = []
 def fail(msg):
     FAILED.append(msg)
 
+class _Tee(object):
+    """同时写多个流（--log：控制台 + UTF-8 文件，绕开 PowerShell 重定向乱码）"""
+
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, s):
+        for st in self.streams:
+            try:
+                st.write(s)
+            except Exception:
+                pass
+
+    def flush(self):
+        for st in self.streams:
+            try:
+                st.flush()
+            except Exception:
+                pass
+
+
 def main():
-    if len(sys.argv) < 2:
+    argv = sys.argv[1:]
+    if not argv:
         print(__doc__)
         return 1
-    path = Path(sys.argv[1])
+
+    # --log <file>：输出同时写入 UTF-8 文件（PowerShell 重定向中文会乱码）
+    log_path = None
+    if "--log" in argv:
+        i = argv.index("--log")
+        if i + 1 < len(argv):
+            log_path = argv[i + 1]
+            del argv[i:i + 2]
+    if not argv:
+        print(__doc__)
+        return 1
+    if log_path:
+        sys.stdout = _Tee(sys.stdout, open(log_path, "w", encoding="utf-8", errors="replace"))
+        sys.stderr = sys.stdout
+
+    path = Path(argv[0])
     if not path.exists():
         print(f"文件不存在: {path}")
         return 1
@@ -355,6 +392,17 @@ def main():
             print("    OK 滚动高亮脚本")
         else:
             print("    注意 未发现滚动高亮脚本（建议添加）")
+
+    # ---------- 9. 产品用途与客户映射 ----------
+    print("\n[9] 产品用途与客户映射（企业概况必备）")
+    # 表头含五要素任一列，才认作已建映射表（避免"客户"二字在风险章节出现就算通过）
+    has_map = bool(re.search(r'<th[^>]*>\s*(工业用途|直接客户|终端行业|下游客户)', html)) \
+        or bool(re.search(r'\|\s*(工业用途|直接客户|终端行业|下游客户)\s*\|', html))
+    if not has_map:
+        fail("缺「产品 → 用途 → 客户」映射表：企业概况的「主要产品」须配五要素表"
+             "（产品 / 是什么 / 工业用途 / 直接客户 / 终端行业），禁止只罗列产品名。"
+             "模板见 references/product_downstream_map.md")
+    print(f"    {'OK ' if has_map else 'FAIL'} 映射表表头（工业用途 / 直接客户 / 终端行业）")
 
     # ---------- 汇总 ----------
     print("\n" + "=" * 56)
