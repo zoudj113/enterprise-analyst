@@ -149,6 +149,41 @@ def main():
             return len(re.findall(r'<t[dh][\s>]', row))
         return len([c for c in row.strip().strip('|').split('|')])
 
+    def row_layout(rows):
+        """逐行返回 [(col, attrs)]，正确处理 rowspan / colspan 的跨行跨列占位。
+
+        行内被上方 rowspan 占据的列会补一个占位单元，因此返回列表的长度即该行的
+        「视觉列数」——用于列数一致性检查，避免把合法的 rowspan 误判为列数缺失。
+        """
+        pending = {}          # col -> (剩余占据行数, attrs)
+        out = []
+        for r in rows:
+            occ = {c: a for c, (rem, a) in pending.items() if rem > 0}
+            placed = [(c, a) for c, a in sorted(occ.items())]
+            nxt = {c: (rem - 1, a) for c, (rem, a) in pending.items() if rem - 1 > 0}
+            col = 0
+            for cm in re.finditer(r'<td([^>]*)>', r):
+                attrs = cm.group(1)
+                while col in occ:
+                    col += 1
+                rm_ = re.search(r'rowspan\s*=\s*"(\d+)"', attrs)
+                sm_ = re.search(r'colspan\s*=\s*"(\d+)"', attrs)
+                rs = int(rm_.group(1)) if rm_ else 1
+                cs = int(sm_.group(1)) if sm_ else 1
+                placed.append((col, attrs))
+                if rs > 1:
+                    for k in range(cs):
+                        nxt[col + k] = (rs - 1, attrs)
+                col += cs
+            pending = nxt
+            out.append(placed)
+        return out
+
+    def body_rows(tb):
+        """取表格正文行（排除含 <th> 的表头行）。"""
+        return [r for r in re.findall(r'<tr[^>]*>([\s\S]*?)</tr>', tb)
+                if not re.search(r'<th[\s>]', r)]
+
     print(f"    共 {len(tables)} 张表")
     for i, tb in enumerate(tables, 1):
         if is_html:
@@ -156,18 +191,20 @@ def main():
             if not head_m:
                 continue
             head_n = len(re.findall(r'<th[\s>]', head_m.group(0)))
-            rows = re.findall(r'<tr>([\s\S]*?)</tr>', tb)
+            rows = body_rows(tb)
+            layout = row_layout(rows)
+            bad = [len(pl) for pl in layout if len(pl) and len(pl) != head_n]
         else:
             lines = [l for l in tb.splitlines() if l.strip().startswith('|')]
             if len(lines) < 2:
                 continue
             head_n = cells(lines[0])
             rows = lines[2:]  # 跳过表头 + 分隔行
-        bad = []
-        for r in rows:
-            n = cells(r)
-            if n and n != head_n:
-                bad.append(n)
+            bad = []
+            for r in rows:
+                n = cells(r)
+                if n and n != head_n:
+                    bad.append(n)
         if bad:
             fail(f"表 #{i} 列数不一致: 表头 {head_n} 列，异常行 {sorted(set(bad))}")
             print(f"    FAIL 表 #{i}: 表头 {head_n} 列，异常 {bad}")
@@ -191,21 +228,12 @@ def main():
                     span = int(sm.group(1))
                 th_flags.extend(['num-c' in attrs] * span)
             counts = {}
-            for rm in re.finditer(r'<tr[^>]*>([\s\S]*?)</tr>', tb):
-                row = rm.group(1)
-                if re.search(r'<th[\s>]', row):
-                    continue
-                col = 0
-                for cm2 in re.finditer(r'<td([^>]*)>', row):
-                    span = 1
-                    sm2 = re.search(r'colspan\s*=\s*"(\d+)"', cm2.group(1))
-                    if sm2:
-                        span = int(sm2.group(1))
+            for placed in row_layout(body_rows(tb)):
+                for col, attrs in placed:
                     slot = counts.setdefault(col, [0, 0])
                     slot[0] += 1
-                    if 'num-c' in cm2.group(1):
+                    if 'num-c' in attrs:
                         slot[1] += 1
-                    col += span
             for col, (total, num) in counts.items():
                 if total and num / total >= 0.5 and col < len(th_flags) and not th_flags[col]:
                     aligned_bad += 1
@@ -403,6 +431,31 @@ def main():
              "（产品 / 是什么 / 工业用途 / 直接客户 / 终端行业），禁止只罗列产品名。"
              "模板见 references/product_downstream_map.md")
     print(f"    {'OK ' if has_map else 'FAIL'} 映射表表头（工业用途 / 直接客户 / 终端行业）")
+
+    # ---------- 10. 行业地位与竞争格局 ----------
+    print("\n[10] 行业地位与竞争格局（独立章节）")
+    # 标题里常含 <span class="num">二</span> 等内联标签，须取整段 h2 再匹配
+    h2_titles = re.findall(r'<h2[^>]*>([\s\S]*?)</h2>', html)
+    has_sec = any(re.search(r'行业地位|竞争格局', re.sub(r'<[^>]+>', '', t)) for t in h2_titles) \
+        or bool(re.search(r'^#{1,3}\s*.*(行业地位|竞争格局)', html, re.M))
+    if not has_sec:
+        fail("缺「行业地位与竞争格局」章节：必须有独立章节回答「行业多大、对手是谁、凭什么赚钱」。"
+             "规范见 references/industry_competitive_landscape.md")
+    print(f"    {'OK ' if has_sec else 'FAIL'} 独立章节标题")
+
+    signals = {
+        "行业规模/市场规模": r'市场规模|行业规模',
+        "竞争格局/对手/梯队": r'竞争对手|竞争格局|第一梯队|第二梯队',
+        "资源自给率": r'自给率',
+        "单位成本/成本曲线": r'完全成本|单位成本|吨成本|成本曲线',
+        "市占率/份额": r'市占率|市场份额|占全国|占全球',
+    }
+    hit = [k for k, pat in signals.items() if re.search(pat, html)]
+    for k in signals:
+        print(f"    {'OK ' if k in hit else '--  '} {k}")
+    if len(hit) < 3:
+        fail("行业地位章节内容不足：至少需覆盖「行业规模、竞争格局、自给率、成本曲线、市占率」中的 3 项，"
+             f"当前仅 {len(hit)} 项（{('、'.join(hit)) or '无'}）")
 
     # ---------- 汇总 ----------
     print("\n" + "=" * 56)
