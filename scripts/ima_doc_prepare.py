@@ -17,9 +17,10 @@ ima 长文档预处理：清洗 + 关键词行号索引（enterprise-analyst Ste
 
 关键词文件：每行一个关键词，缺省时用内置财报关键词表。
 
-依赖：仅标准库。Windows 下用
-    C:\\Users\\zx\\.workbuddy\\binaries\\python\\versions\\3.13.12\\python.exe
+依赖：仅标准库，任意 Python 3 均可运行（WorkBuddy 的 managed python 或系统 python）。
 """
+
+
 import argparse
 import json
 import os

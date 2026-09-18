@@ -12,6 +12,22 @@ agent_created: true
 
 详细的分析框架、运行准则和期望输出格式，请参考：`references/enterprise_analyst_prompt.md`
 
+## 迁移到新电脑（可移植性 · 本 skill 无写死路径）
+
+本 skill 全部脚本**不硬编码任何绝对路径**，可直接复制到任意 WorkBuddy 机器（`~/.workbuddy/skills/enterprise-analyst/`）使用。仅需在新机重建运行时依赖：
+
+| 依赖 | 用途 | 重建方式 |
+|---|---|---|
+| **Python 3**（WorkBuddy managed 或系统任意） | 跑 `cninfo_fetch.py` / `ima_doc_prepare.py` / `check_report.py` | 无需额外包，纯标准库 |
+| **`pymupdf`** | `extract_pdf_text.py` 提取 PDF 文本 | `<venv-python> -m pip install pymupdf -i https://pypi.tuna.tsinghua.edu.cn/simple` |
+| **`cos-python-sdk-v5`** | `ima_upload_cos.py` 上传 COS | 同上一命令把包名换成 `cos-python-sdk-v5` |
+| **ima MCP**（`imamcp`） | Step 3.8 回传知识库 | 在 WorkBuddy 连接 ima 连接器 |
+
+> 文中出现的 `<python>` / `<venv-python>` 均为**占位符**：`<python>` 指任意可用 Python 3；
+> `<venv-python>` 指装了上述第三方包的解释器（WorkBuddy 下通常是 default venv 里的 `python.exe`，
+> 路径形如 `C:\Users\<用户名>\.workbuddy\binaries\python\envs\default\Scripts\python.exe`，用户名随机器而变）。
+> 所有脚本核心逻辑均通过 `argparse` 参数 / 相对路径传参，与机器无关。
+
 ## 触发场景
 
 - 用户提供财报文件（PDF/文字内容）请求分析
@@ -118,7 +134,7 @@ python        scripts/ima_doc_prepare.py  <下载目录>                # 目录
 **ima 长文本处理要点**：年报全文可达数十万字符，**禁止直接 Read 整份**。正确做法是先用 Grep 定位关键词行号，再写一段 Python 脚本按行切片输出到若干小文件（如 `_part1.txt`），逐段 Read。分析完成后必须清理所有中间文件。
 
 > **Windows 清理中间文件必须用 Python `os.remove`**：本机 PowerShell `Remove-Item` 会静默失败（文件仍在），
-> Bash `rm` 也可能因 shim 缺 `rm`/`dirname` 报 command not found。用 `.workbuddy/binaries/python` 或其中的 venv 执行。
+> Bash `rm` 也可能因 shim 缺 `rm`/`dirname` 报 command not found。用 `<python>` 或装了包的 `<venv-python>` 执行。
 > **坑**：`shutil.rmtree(dir, ignore_errors=True)` 经常「文件删光但目录壳还在」——删完必须
 > `os.listdir` 复核，若目录仍存在再 `shutil.rmtree` 一次或逐层 `os.rmdir`。
 
@@ -259,23 +275,25 @@ python scripts/extract_pdf_text.py <pdf_dir> <txt_output_dir> --files 文件名1
 **示例**：
 ```bash
 python scripts/extract_pdf_text.py \
-  "C:\Users\zx\Desktop\C\N农夫山泉\workbuddy" \
-  "C:\Users\zx\Desktop\C\N农夫山泉\workbuddy"
+  "<你的文档目录>" \
+  "<你的文档目录>"
 ```
 
 **说明**：`txt_output_dir` 可以与 `pdf_dir` 相同（PDF 和 TXT 放在一起），也可以分开。
 
 **输出**：每个 PDF 对应一个 `{原名}_pymupdf.txt` 文件，UTF-8 编码，每页以 `--- Page N ---` 分隔。
 
-**依赖**：需先安装 `pymupdf`：`pip install pymupdf`
+**依赖**：需先安装 `pymupdf`：`pip install pymupdf`（装包可走清华源 `-i https://pypi.tuna.tsinghua.edu.cn/simple`）
 
-> **解释器必须用 venv（本机已验证 2026-09）**：`pymupdf` 只装在隔离 venv 里，managed 版 Python 没有。
-> 直接 `python scripts/...` 会报 ModuleNotFoundError。正确调用：
+> **解释器必须用装了 pymupdf 的 venv**：`extract_pdf_text.py` 依赖 `pymupdf`（非标准库），
+> WorkBuddy 的 managed python 里默认没有。在本机场景，装 pymupdf 的隔离环境就是
+> WorkBuddy 自带的默认 venv；正确调用：
 > ```
-> "C:\Users\zx\.workbuddy\binaries\python\envs\default\Scripts\python.exe" "C:\Users\zx\.workbuddy\skills\enterprise-analyst\scripts\extract_pdf_text.py" <pdf_dir> <txt_output_dir>
+> <venv-python> "C:\Users\<用户名>\.workbuddy\skills\enterprise-analyst\scripts\extract_pdf_text.py" <pdf_dir> <txt_output_dir>
 > ```
-> 装包走清华源：`"...\envs\default\Scripts\pip.exe" install pymupdf -i https://pypi.tuna.tsinghua.edu.cn/simple`
-> venv 里已有：pymupdf、pypdf、edge-tts、imageio-ffmpeg、cos-python-sdk-v5。
+> 其中 `<venv-python>` = 装了 pymupdf 的解释器（WorkBuddy 下通常是 default venv 的 python.exe）。
+> 本 skill 脚本依赖的第三方包：`pymupdf`（extract_pdf_text）、`cos-python-sdk-v5`（ima_upload_cos）；
+> 其余脚本（cninfo_fetch / ima_doc_prepare / check_report）纯标准库。
 > 注：Bash 工具常损坏（`dirname`/`head` not found），用 PowerShell 调用；PowerShell 不回显 stdout，
 > 需要输出时让脚本写 UTF-8 文件再用 Read 读。
 

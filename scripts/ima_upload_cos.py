@@ -14,8 +14,8 @@ ima 上传第二步：把本地文件传到 COS（enterprise-analyst Step 3.8）
 content_type：不传时按扩展名自动映射（html→text/html、md→text/markdown、pdf→application/pdf …），
 映射不到则报错退出 —— ima 禁止用 application/octet-stream 兜底。
 
-依赖：cos-python-sdk-v5（只装在隔离 venv）
-    C:\\Users\\zx\\.workbuddy\\binaries\\python\\envs\\default\\Scripts\\python.exe
+依赖：cos-python-sdk-v5（装在 WorkBuddy 隔离 venv 或任意可用 python 环境）
+    运行方式：<venv-python> scripts/ima_upload_cos.py ...（<venv-python> 为装了 cos-python-sdk-v5 的解释器）
 """
 import argparse
 import json
