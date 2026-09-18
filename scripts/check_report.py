@@ -457,6 +457,39 @@ def main():
         fail("行业地位章节内容不足：至少需覆盖「行业规模、竞争格局、自给率、成本曲线、市占率」中的 3 项，"
              f"当前仅 {len(hit)} 项（{('、'.join(hit)) or '无'}）")
 
+    # ---------- 11. 反空值检查（数据不得丢失） ----------
+    # 数值单元格（class 含 num-c 的 td/th）不得出现空占位符（— / - / null / N/A / 空串）。
+    # 但凡留空，必须能给出「原始数据确未披露」的正当理由，由写报告者人工确认后逐条豁免。
+    # 本检查只告警不豁免：把每个空值列出来逼人复核，杜绝「该有数却留空」。
+    print("\n[11] 反空值检查（数据不得留空）")
+    if is_html:
+        PLACEHOLDER = re.compile(r'(^|\s)[—–-]{1,3}(\s|$)')
+        EMPTY_TD = re.compile(r'<td([^>]*)>\s*(?:<[^>]+>\s*)*</td>')
+        blanks = []
+        for i, tb in enumerate(tables, 1):
+            for tdm in re.finditer(r'<t[dh]([^>]*)>([\s\S]*?)</t[dh]>', tb):
+                attrs, content = tdm.group(1), tdm.group(2)
+                if 'num-c' not in attrs and 'num-c' not in attrs:
+                    # 仅检查数值列
+                    pass
+                if 'num-c' not in attrs:
+                    continue
+                txt = re.sub(r'<[^>]*>', '', content).strip()
+                if txt == '' or txt in ('—', '-', '--', '——', 'null', 'N/A', 'NA', 'n/a', '无', '未披露'):
+                    blanks.append((i, txt if txt else '(空)'))
+        if blanks:
+            # 汇总去重
+            uniq = {}
+            for i, v in blanks:
+                uniq.setdefault(i, []).append(v)
+            for i in sorted(uniq):
+                fail(f"表 #{i} 存在空值单元格 {len(uniq[i])} 处: {uniq[i][:8]}")
+                print(f"    FAIL 表 #{i}: 空值 {len(uniq[i])} 处，示例 {uniq[i][:8]}")
+        if not blanks:
+            print("    OK 数值列无空占位符")
+    else:
+        print("    --  Markdown 模式：请人工检查表格无空值")
+
     # ---------- 汇总 ----------
     print("\n" + "=" * 56)
     if not FAILED:
