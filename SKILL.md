@@ -75,8 +75,20 @@ agent_created: true
 
 **触发**：用户要分析的公司，本地无 PDF、ima 也无对应知识库/财报；**或 ima 有但缺最新报告期**（缺期按同一分支补齐）。
 
+**⚠️ 硬约束：默认套装的数量规则，对所有数据源（A 股 / 港股 / 美股）一律适用，不是「仅供参考」。**
+> 教训（2026-09 拼多多 PDD）：走美股分支时，EDGAR 链路刚打通就顺势往下写报告，
+> **只下载了最新一份 20-F 就开干**，被用户当场指出「明明写的是近 5 年年报 + 招股说明书」。
+> 结果整个第二章到第七章要返工，多花十几轮。
+>
+> **正确做法：Step 1 结束时必须自问一句「我拿到的文件数量，符合默认套装表吗？」**
+> 具体到美股：近 5 年 = **5 份 20-F**，外加**至少 1 份招股书**（IPO 用 424B4/F-1，后续可能有增发稿）。
+> 开工前先把要下的 accession 列成清单，对照数量规则核过一遍再下载。
+> 多年序列的价值在于能画出趋势（利润率拐点、业务结构切换、口径停披），
+> 单份最新年报是**看不出这些的**——这不是可省的步奏。
+
 **只补缺口时不要跑默认套装**：ima 已有大部分年报、只缺最新一期，跑全套会重复下载。此时用
 `--se-date 2026-01-01~2026-12-31` 或 `--type interim --per-type 1` 精准补缺的那一份。
+> 注意区分场景：**ima 已有存量 → 只补缺口；本次全新下载 → 必须跑满默认套装。**
 
 **先问后做（避免白跑）**：能明确公司名 + 上市地时直接开干；若上市地/代码存疑（如同名公司、A+H 双重上市），先用一次工具确认，不要猜。
 
@@ -117,8 +129,72 @@ python scripts/cninfo_fetch.py 000807 --out ./_src --json --log _dl.txt
 **② 港股 —— 用 `hkex-reports-to-ima` 技能**（披露易 hkexnews 搜索 API → PDF 下载 → pypdf 校验）。
 该技能原本是「下载 + 上传 ima」，此处只取它的**下载**环节即可，不必上传。
 
-**③ 美股 —— SEC EDGAR**（`https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=&type=10-K`），
-10-K 为年报、10-Q 为季报；注意财年截止月可能与自然年不同。
+**③ 美股 —— SEC EDGAR**（2026-09 拼多多 PDD 实测通过）
+
+> **最大的坑：中概股几乎都是「外国私人发行人 FPI」，表格形式是 20-F / 6-K，不是 10-K / 10-Q。**
+> 按 10-K/10-Q 去检索会一条都搜不到。阿里、京东（非 FPI 的部分除外）、拼多多、网易等均属此类。
+
+| 需求 | FPI 对应的表单 | 说明 |
+|---|---|---|
+| 年报 | **20-F** | 年度财务报告，含审计意见 + 三年合并报表 |
+| 季报 | **6-K** 里的 **EX-99.1** | 季度业绩 press release（财报正文挂在这份 exhibit 里） |
+| 临时公告 | 6-K | 重大事项、处罚、人事等 |
+
+标准流程：
+
+1. **查 CIK**：`https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company=<英文名>&type=&dateb=&owner=include&count=40`
+   （直接用 WebFetch 抓这个页面最快。已知：PDD Holdings **CIK=1737806**，财年截止 12-31。）
+   > **坑**：别去下载 `company_tickers.json`（几万行，本机实测稳定 `IncompleteRead`）；
+   > `CIK##########.json`（前导零 10 位）取不到就用 browse-edgar 页面反查。
+2. **找 accession**：browse-edgar 页或直接请求
+   `https://www.sec.gov/Archives/edgar/data/<CIK>/<acc-no去掉横线>/<acc-no>-index.htm`
+   主文档通常形如 `pdd-20251231x20f.htm`（iXBRL，4 MB 上下）。6-K 的季度业绩先在 index 页
+   确认文件名，一般是 `xxxx_ex99-1.htm`。
+3. **下载**：`urllib.request` **必须带 `User-Agent`**（SEC 对无 UA 请求返回 403）。
+   > **坑（必踩）**：4 MB 文件用 `urlopen(...).read()` 会 **`IncompleteRead`**（只读到 ~4 MB 就断）。
+   > 必须**分块读 + 异常重试**：
+   > ```python
+   > buf = b""
+   > while True:
+   >     try:
+   >         with urllib.request.urlopen(req, timeout=60) as r:
+   >             while chunk := r.read(65536):
+   >                 buf += chunk
+   >         break
+   >     except Exception:
+   >         time.sleep(2)   # 重试整份重下，别续传
+   > ```
+4. **转文本**：iXBRL 是 HTML，用标准库 `html.parser` 剥标签即可，**不需要 pypdf/pymupdf**。
+   20-F 转出来约 **87 万字符**。
+5. **读法**：同样遵守「先 Grep 拿行号 → 再 Read ±N 行」。常用锚点正则：
+   `Report of Independent Registered|unqualified|critical audit matter`、
+   `CONSOLIDATED STATEMENTS OF COMPREHENSIVE INCOME`、`CONSOLIDATED BALANCE SHEETS`、
+   `CONSOLIDATED STATEMENTS OF CASH FLOWS`、`Major Shareholders|beneficially own|voting power`。
+6. **单位陷阱（务必换算）**：
+   - 20-F 合并报表单位为 **千元 RMB** → 亿元 **÷ 100,000**
+   - 6-K press release 单位为 **百万元 RMB** → 亿元 **÷ 100**
+   > 二者差 1000 倍，混用会让整张利润表错到离谱。写报告前先把单位写在草稿里。
+
+> **回传 ima 时**：`create_media` 支持 `html/htm → text/html`（对照表里有），20-F 原文件可直接传，
+> 不必强行转 PDF。实测 4.3 MB 的 .htm 上传正常，一批 9 份（5 份 20-F + 2 份招股书 + 6-K + 报告）全部成功。
+
+**取够数量之后的两件事**
+
+**① 批量校验有没有下错文件。** 靠 BYTE 大小判断会踩坑：拼多多 2024 与 2025 两份 20-F 的 .htm
+**字节数完全相同（都是 4,333,381）**，一度疑似下载串味。正确做法是比对 **MD5/ETag**：
+```python
+hashlib.md5(open(p,'rb').read()).hexdigest()   # 不同文件的 md5 必然不同
+```
+更实用的一招是**用内容判断财年**：统计文中 `"year ended December 31, (YYYY)"` 的出现频次，
+**出现最多的年份**就是这份年报对应的财年。用这个方法可一次性批量确认 N 份年报分别对应哪一年。
+
+**② 多年数据的三种写法（单靠最新一期看不到）。**
+- **拼接长序列**：美股 20-F / A 股年报都逐年滚动披露三年数据，重叠年份天然互为交叉验证，
+  把这些镶嵌起来可得到远长于单份的完整序列（本次拼出 2019–2025 共七年）。
+- **业务口径变更**：科目被取消 / 口径变了，本身就是重要信息（例：拼多多 2022 年报起砍掉
+  `Merchandise sales` 自营科目；GMV 与活跃买家自 2022 年报起停止披露）。
+- **写时点清主语**：像「Merchandise sales」这类容易误解的科目，报告中要说明
+  「拼多多自己采购商品再卖给用户」是公司作为销售方的自营业务，非撮合的第三方商家销售。
 
 **④ 提取与索引**（与本地 PDF 分支相同）
 ```bash
