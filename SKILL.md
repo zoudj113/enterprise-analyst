@@ -69,7 +69,7 @@ agent_created: true
 |---|---|
 | **本地 PDF 目录** | `python scripts/extract_pdf_text.py <pdf_dir> <txt_output_dir>`（依赖 pymupdf） |
 | **ima 知识库** | ① `get_knowledge_base_list` 定位知识库 id → ② `search_knowledge` 检索 → ③ `fetch_media_content` 按 media_id 取全文 → ④ 结果落在 tool-results 的 `.txt` 里（文件名含时间戳），先 Copy 到工作区再分析。**无需、也不能用** `extract_pdf_text.py` |
-| **C · 本地与 ima 都没有** | 见下方「分支 C：外部获取」。**A 股走巨潮**（`scripts/cninfo_fetch.py`）→ PDF → `extract_pdf_text.py` → `ima_doc_prepare.py` |
+| **C · 本地与 ima 都没有** | 见下方「分支 C：外部获取」。**A 股走巨潮**（`scripts/cninfo_fetch.py`）→ PDF → `extract_pdf_text.py` → `ima_doc_prepare.py`；**美股走 EDGAR**（`scripts/edgar_fetch.py --to-text`）→ 直接产出 .txt，**不需要 pypdf/pymupdf** |
 
 ### 分支 C：本地与 ima 都没有（外部获取）
 
@@ -129,7 +129,7 @@ python scripts/cninfo_fetch.py 000807 --out ./_src --json --log _dl.txt
 **② 港股 —— 用 `hkex-reports-to-ima` 技能**（披露易 hkexnews 搜索 API → PDF 下载 → pypdf 校验）。
 该技能原本是「下载 + 上传 ima」，此处只取它的**下载**环节即可，不必上传。
 
-**③ 美股 —— SEC EDGAR**（2026-09 拼多多 PDD 实测通过）
+**③ 美股 —— SEC EDGAR**（2026-09 拼多多 PDD 实测通过，已沉淀为 `scripts/edgar_fetch.py`）
 
 > **最大的坑：中概股几乎都是「外国私人发行人 FPI」，表格形式是 20-F / 6-K，不是 10-K / 10-Q。**
 > 按 10-K/10-Q 去检索会一条都搜不到。阿里、京东（非 FPI 的部分除外）、拼多多、网易等均属此类。
@@ -138,32 +138,46 @@ python scripts/cninfo_fetch.py 000807 --out ./_src --json --log _dl.txt
 |---|---|---|
 | 年报 | **20-F** | 年度财务报告，含审计意见 + 三年合并报表 |
 | 季报 | **6-K** 里的 **EX-99.1** | 季度业绩 press release（财报正文挂在这份 exhibit 里） |
-| 临时公告 | 6-K | 重大事项、处罚、人事等 |
+| 招股书 | **424B4**（IPO / 增发）、**424B5** | 后续增发用 424B5 也很常见，脚本两种都收 |
+| 临时公告 | 6-K | 重大事项、处罚、人事等，与季报混在同一表单里 |
 
-标准流程：
+**直接用脚本，不要手工拼 URL：**
+
+```bash
+# 1) 先干跑，看清会下载哪几份（强烈建议第一步）
+python scripts/edgar_fetch.py 1737806 --list --log _plan.txt
+
+# 2) 正式下载 + 转纯文本（文本才能 Grep/Read）
+python scripts/edgar_fetch.py 1737806 --out ./_src --to-text --log _dl.txt
+```
+
+默认套装自动拉齐 5 份 20-F + 全部 424B4/B5 招股书 + 最近 8 份 6-K 候选。
+脚本会**下载后按内容判定财年**并打印，用它复核有没有下错。
+
+| 参数 | 用途 |
+|---|---|
+| `--years N` | 默认套装取几年年报（默认 5） |
+| `--acc 0001104659-26-050727,...` | 已知 accession 时精确下载，绕过检索 |
+| `--forms 20-F,424B4` | 手工指定表单类别 |
+| `--no-6k` / `--max-6k-probe N` | 不探测 6-K / 调整候选份数 |
+| `--to-text` | iXBRL HTML 转 .txt（标准库剥标签，不需要 pypdf） |
+| `--log <file>` | **PowerShell 重定向中文会乱码**，用这个写 UTF-8 |
+
+**手工链路的要点**（脚本失效时要知道这些）：
 
 1. **查 CIK**：`https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company=<英文名>&type=&dateb=&owner=include&count=40`
-   （直接用 WebFetch 抓这个页面最快。已知：PDD Holdings **CIK=1737806**，财年截止 12-31。）
-   > **坑**：别去下载 `company_tickers.json`（几万行，本机实测稳定 `IncompleteRead`）；
-   > `CIK##########.json`（前导零 10 位）取不到就用 browse-edgar 页面反查。
-2. **找 accession**：browse-edgar 页或直接请求
-   `https://www.sec.gov/Archives/edgar/data/<CIK>/<acc-no去掉横线>/<acc-no>-index.htm`
-   主文档通常形如 `pdd-20251231x20f.htm`（iXBRL，4 MB 上下）。6-K 的季度业绩先在 index 页
-   确认文件名，一般是 `xxxx_ex99-1.htm`。
-3. **下载**：`urllib.request` **必须带 `User-Agent`**（SEC 对无 UA 请求返回 403）。
+   （WebFetch 抓这个页面最快。已知：PDD Holdings **CIK=1737806**，财年截止 12-31。）
+   脚本走的是同一检索的 ATOM 版（`&output=atom`），也可给英文名自动反查。
+2. **列 accession**：`https://data.sec.gov/submissions/CIK<补零到10位>.json`（如 `CIK0001737806.json`），
+   返回里的 `filings.recent` 是并列数组（form / filingDate / accessionNumber / **primaryDocument**）。
+   > **坑（本次真踩过）**：CIK **必须前导零补满 10 位**，直接写 `CIK1737806.json` 会 404。
+   > 早期我误判为「submissions 接口不可用」，改用页面人工读 accession，绕了七八轮；补零后一次就通。
+   > `primaryDocument` 直接给出主文档文件名，形如 `pdd-20251231x20f.htm`，**不用自己猜**。
+   > 另外别去下 `company_tickers.json`（几万行，本机实测稳定 `IncompleteRead`）。
+3. **下载**：`urllib.request` **必须带 `User-Agent`**（SEC 对无 UA 请求返回 403），例如
+   `UA = "EnterpriseAnalyst/1.0 (analyst@example.com)"`。
    > **坑（必踩）**：4 MB 文件用 `urlopen(...).read()` 会 **`IncompleteRead`**（只读到 ~4 MB 就断）。
-   > 必须**分块读 + 异常重试**：
-   > ```python
-   > buf = b""
-   > while True:
-   >     try:
-   >         with urllib.request.urlopen(req, timeout=60) as r:
-   >             while chunk := r.read(65536):
-   >                 buf += chunk
-   >         break
-   >     except Exception:
-   >         time.sleep(2)   # 重试整份重下，别续传
-   > ```
+   > 必须**分块读 + 整份重试**（续传容易拿到残缺的 HTML，宁可整份重下）。
 4. **转文本**：iXBRL 是 HTML，用标准库 `html.parser` 剥标签即可，**不需要 pypdf/pymupdf**。
    20-F 转出来约 **87 万字符**。
 5. **读法**：同样遵守「先 Grep 拿行号 → 再 Read ±N 行」。常用锚点正则：
@@ -185,8 +199,16 @@ python scripts/cninfo_fetch.py 000807 --out ./_src --json --log _dl.txt
 ```python
 hashlib.md5(open(p,'rb').read()).hexdigest()   # 不同文件的 md5 必然不同
 ```
-更实用的一招是**用内容判断财年**：统计文中 `"year ended December 31, (YYYY)"` 的出现频次，
-**出现最多的年份**就是这份年报对应的财年。用这个方法可一次性批量确认 N 份年报分别对应哪一年。
+更实用的一招是**用内容判断财年**——`edgar_fetch.py --to-text` 已经内置，下载后自动打印：
+
+| 文档类型 | 看哪个指标 | 原因 |
+|---|---|---|
+| 20-F 年报 | **众数财年** | 正文绝大多数引用当期财年，实测 2025 年报命中 11 处 2025 |
+| 6-K 季报 | **全文最新年份** | 去年同期提及次数不相上下（Q2 稿把 2026 判成过 2025）；且报表列头「2026」单独成行，短语正则抓不到，只能 scan 全文四位年份 |
+| 424B4 招股书 | **众数财年** | IPO 稿众数落在上市前最近完整年（拼多多 2018 招股书 → 2017） |
+
+> 财年判定切记**天数写死 31 会翻车**：季报截止日是 June 30 / September 30 / March 31，
+> 正则必须是 `\d{1,2}`，否则整个季度报直接漏识别。
 
 **② 多年数据的三种写法（单靠最新一期看不到）。**
 - **拼接长序列**：美股 20-F / A 股年报都逐年滚动披露三年数据，重叠年份天然互为交叉验证，
@@ -637,6 +659,7 @@ LIFO 公司存货账面值与毛利率不可与 A/H 股同行直比；审计意�
 （历史教训：时间列排序规则曾在 6 处重复定义，每次升级必须同步改 6 个位置，极易漏改。）
 
 - `scripts/extract_pdf_text.py` — 通用 PyMuPDF PDF 文本提取脚本，支持中文财报，支持命令行参数
+- `scripts/edgar_fetch.py` — **美股/中概股财报检索下载**（Step 0 分支 C）：SEC EDGAR submissions API（CIK 补零到 10 位）→ 按默认套装选 20-F/424B4/6-K → 抓 index 页挑主文档 → 分块下载 + 转纯文本 + 自动判定财年。标准库，managed python 可跑
 - `scripts/cninfo_fetch.py` — **A 股财报公告检索/下载**（Step 0 分支 C）：巨潮资讯网 API，按代码+类别拉一手公告 PDF。标准库，managed python 可跑
 - `scripts/ima_doc_prepare.py` — **长文档预处理**（Step 1）：清洗 `fetch_media_content` 落地的 JSON/转义文本 → `_clean.md`，并生成 `_index.txt` 关键词行号索引。**支持传目录批量处理（推荐，避开中文名传参问题）**。仅用标准库
 - `scripts/ima_upload_cos.py` — **ima 上传第二步**（Step 3.8）：读 `create_media` 凭证 JSON → 上传 COS → 结果落盘。需 venv python（`cos-python-sdk-v5`）
