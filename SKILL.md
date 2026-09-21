@@ -69,7 +69,7 @@ agent_created: true
 |---|---|
 | **本地 PDF 目录** | `python scripts/extract_pdf_text.py <pdf_dir> <txt_output_dir>`（依赖 pymupdf） |
 | **ima 知识库** | ① `get_knowledge_base_list` 定位知识库 id → ② `search_knowledge` 检索 → ③ `fetch_media_content` 按 media_id 取全文 → ④ 结果落在 tool-results 的 `.txt` 里（文件名含时间戳），先 Copy 到工作区再分析。**无需、也不能用** `extract_pdf_text.py` |
-| **C · 本地与 ima 都没有** | 见下方「分支 C：外部获取」。**A 股走巨潮**（`scripts/cninfo_fetch.py`）→ PDF → `extract_pdf_text.py` → `ima_doc_prepare.py`；**美股走 EDGAR**（`scripts/edgar_fetch.py --to-text`）→ 直接产出 .txt，**不需要 pypdf/pymupdf** |
+| **C · 本地与 ima 都没有** | 见下方「分支 C：外部获取」。**A 股走巨潮**（`scripts/cninfo_fetch.py`）→ PDF → `extract_pdf_text.py` → `ima_doc_prepare.py`；**港股走披露易**（`scripts/hkex_fetch.py`）→ PDF → `extract_pdf_text.py`；**美股走 EDGAR**（`scripts/edgar_fetch.py --to-text`）→ 直接产出 .txt，**不需要 pypdf/pymupdf** |
 
 ### 分支 C：本地与 ima 都没有（外部获取）
 
@@ -126,8 +126,43 @@ python scripts/cninfo_fetch.py 000807 --out ./_src --json --log _dl.txt
 - 下载后**校验**：脚本会拒绝非 `%PDF` 开头的内容；老公告可能是**扫描件（图片型 PDF）**，
   提取后文本为空——此时换数据源或人工处理，**严禁凭空编造数字**。
 
-**② 港股 —— 用 `hkex-reports-to-ima` 技能**（披露易 hkexnews 搜索 API → PDF 下载 → pypdf 校验）。
-该技能原本是「下载 + 上传 ima」，此处只取它的**下载**环节即可，不必上传。
+**② 港股 —— 用 `scripts/hkex_fetch.py`**（披露易 hkexnews 搜索 API → PDF 下载 → `%PDF` 校验，2026-09 农夫山泉 09633 实测通过）。
+
+```bash
+# 1) 先干跑，看清会下载哪几份（强烈建议第一步）
+python scripts/hkex_fetch.py 09633 --list --log _plan.txt
+
+# 2) 正式下载
+python scripts/hkex_fetch.py 09633 --out ./_src --json --log _dl.txt
+
+# 3) 下载后校验页数（需 venv python 装 pypdf）
+<venv-python> scripts/hkex_fetch.py 09633 --out ./_src --check-pdf
+```
+
+默认套装自动拉齐 **5 份年报 + 招股书 + 最近 1 期中报**（港股**没有季报**，只有年报+中报）。
+
+| 参数 | 用途 |
+|---|---|
+| `--years N` | 默认套装取几年年报（默认 5） |
+| `--type annual,interim,prospectus` | 手工指定类别 |
+| `--title 关键词` | 手工标题过滤（仍是全量拉取后本地匹配） |
+| `--from / --to YYYYMMDD` | 公告日期区间 |
+| `--check-pdf` | 下载后校验 PDF 头 + 页数（需 venv python） |
+| `--log <file>` | **PowerShell 重定向中文会乱码**，用这个写 UTF-8 |
+
+**四个必踩的坑（2026-09 实测，比美股更多）：**
+
+1. **`title` 参数已失效**：披露易 `titleSearchServlet.do` 现在**只要带 `title` 就返回 `recordCnt=0`**，
+   不带才正常出结果。所以不能按关键词远程过滤，必须**拉全量列表后在本地按 `TITLE` 字段正则分类**。
+   字段结构没变：`TITLE` / `FILE_LINK`（相对路径，需拼 `https://www1.hkexnews.hk` 前缀）/
+   `DATE_TIME`（DD/MM/YYYY）/ `NEWS_ID` / `LONG_TEXT`。
+2. **日期区间不能留空**：空日期只返回最近 3 条，必须显式给区间（脚本已自动往前推 6 年）。
+3. **招股书标题是「全球發售」**，不含「招股章程」；且同日还有一份「正式通告」（379KB 小文件，
+   `LONG_TEXT=公告及通告 - [正式通告]`），靠 `LONG_TEXT` 区分，只留「上市文件 - [發售以供認購]」那份。
+4. **要排除的标题**：`企業年度報告書`（工商年报，不是财报）、`中期業績公告`（摘要简报，
+   信息量不如完整「中期報告」）。年报标题是 `20XX年度報告`（偶有空格变体）。
+
+`hkex-reports-to-ima` 技能仍是「下载后上传 ima」的权威配方；本脚本只做下载，后半段可参考它。
 
 **③ 美股 —— SEC EDGAR**（2026-09 拼多多 PDD 实测通过，已沉淀为 `scripts/edgar_fetch.py`）
 
@@ -659,6 +694,7 @@ LIFO 公司存货账面值与毛利率不可与 A/H 股同行直比；审计意�
 （历史教训：时间列排序规则曾在 6 处重复定义，每次升级必须同步改 6 个位置，极易漏改。）
 
 - `scripts/extract_pdf_text.py` — 通用 PyMuPDF PDF 文本提取脚本，支持中文财报，支持命令行参数
+- `scripts/hkex_fetch.py` — **港股财报检索下载**（Step 0 分支 C）：披露易 hkexnews 搜索 API（title 参数失效，全量拉取后本地按 TITLE 分类）→ 近5年年报+招股书+最近中报 → PDF 下载 + `%PDF` 校验。标准库，managed python 可跑
 - `scripts/edgar_fetch.py` — **美股/中概股财报检索下载**（Step 0 分支 C）：SEC EDGAR submissions API（CIK 补零到 10 位）→ 按默认套装选 20-F/424B4/6-K → 抓 index 页挑主文档 → 分块下载 + 转纯文本 + 自动判定财年。标准库，managed python 可跑
 - `scripts/cninfo_fetch.py` — **A 股财报公告检索/下载**（Step 0 分支 C）：巨潮资讯网 API，按代码+类别拉一手公告 PDF。标准库，managed python 可跑
 - `scripts/ima_doc_prepare.py` — **长文档预处理**（Step 1）：清洗 `fetch_media_content` 落地的 JSON/转义文本 → `_clean.md`，并生成 `_index.txt` 关键词行号索引。**支持传目录批量处理（推荐，避开中文名传参问题）**。仅用标准库
