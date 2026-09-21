@@ -1,4 +1,4 @@
-# HTML 深度分析报告 — 单文件模板（默认输出）
+# HTML 分析报告 — 单文件模板（默认输出）
 
 **HTML 是本技能的默认输出格式**，写 HTML 报告时**直接复用本骨架**，只替换内容与数据，不要从零写 CSS。
 文件名固定为 `{公司简称}_分析报告_{YYYYMMDD}.html`。
@@ -29,7 +29,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{公司名}（{代码}）深度分析报告</title>
+<title>{公司名}（{代码}）分析报告</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <style>
 :root{
@@ -136,7 +136,7 @@ footer{margin-top:48px; padding-top:20px; border-top:1px solid var(--line); font
 
 <header id="top">
   <div class="inner">
-    <h1>{公司名}（{代码}）深度分析报告</h1>
+    <h1>{公司名}（{代码}）分析报告</h1>
     <p class="sub">{公司全称} · {英文名}</p>
     <div class="meta">
       <span class="tag">报告日期：{YYYY年M月D日}</span>
