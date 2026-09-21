@@ -61,6 +61,13 @@ agent_created: true
 - **分析过程中产生的中间/过程数据可以删除**（如临时提取的 txt、中间 json、临时脚本输出等）。
 - **最终分析报告（.md/.html 等交付物）要保留**。
 - **财报是本次由我新下载（本地和 ima 原本都没有）时**：最后上传分析报告到 ima 的同时，**把下载的财报原始 PDF 也一并上传到 ima**。
+- **用现成脚本 `cleanup.py` 清理，不要每次现写临时清理脚本**（写完又删）：
+  ```bash
+  python scripts/cleanup.py <工作目录> --dry-run     # 先预览要删什么
+  python scripts/cleanup.py <工作目录> --apply       # 确认后再真正删
+  ```
+  默认只删「以 `_` 开头或命中中间提示词」的文件，自动保留财报原文（*.pdf/*.htm/含「年报/10-K/招股」）与报告。
+  需要删整个目录时用 `--dirs 目录名`（不递归删，除非显式指定）。
 ```
 
 ### 数据源分支（Step 0/1）
@@ -164,10 +171,13 @@ python scripts/hkex_fetch.py 09633 --out ./_src --json --log _dl.txt
 
 `hkex-reports-to-ima` 技能仍是「下载后上传 ima」的权威配方；本脚本只做下载，后半段可参考它。
 
-**③ 美股 —— SEC EDGAR**（2026-09 拼多多 PDD 实测通过，已沉淀为 `scripts/edgar_fetch.py`）
+**③ 美股 —— SEC EDGAR**（2026-09 拼多多 PDD、谷歌 Alphabet 实测通过，已沉淀为 `scripts/edgar_fetch.py`）
 
-> **最大的坑：中概股几乎都是「外国私人发行人 FPI」，表格形式是 20-F / 6-K，不是 10-K / 10-Q。**
-> 按 10-K/10-Q 去检索会一条都搜不到。阿里、京东（非 FPI 的部分除外）、拼多多、网易等均属此类。
+> **先判断公司注册地，再定表单——这是最大的坑：**
+> - **外国私人发行人 FPI（中概股等）** → 年报是 **20-F**、季报挂 **6-K 的 EX-99.1**，不是 10-K/10-Q。阿里、京东（非 FPI 部分除外）、拼多多、网易均属此类。
+> - **美国本土公司**（如 Alphabet/谷歌）→ 年报是 **10-K**、季报是 **10-Q**。
+> 两者表单完全不同，判断错了会一条都搜不到（2026-09 谷歌分析教训：默认套装最初只认 20-F，导致 Alphabet 颗粒无收）。
+> `edgar_fetch.py` 默认套装现已**同时识别 20-F 与 10-K**，自动兜底。
 
 | 需求 | FPI 对应的表单 | 说明 |
 |---|---|---|
@@ -209,6 +219,11 @@ python scripts/edgar_fetch.py 1737806 --out ./_src --to-text --log _dl.txt
    > 早期我误判为「submissions 接口不可用」，改用页面人工读 accession，绕了七八轮；补零后一次就通。
    > `primaryDocument` 直接给出主文档文件名，形如 `pdd-20251231x20f.htm`，**不用自己猜**。
    > 另外别去下 `company_tickers.json`（几万行，本机实测稳定 `IncompleteRead`）。
+   > **坑（追多年必踩）**：`filings.recent` 只保留**最近约 1000 条**，追十年（如 Alphabet 2015 年的
+   > 10-K）会漏。更早记录在 `filings.files` 指向的**分页文件**里（`CIK0001652044-submissions-001.json`）。
+   > **分页文件是扁平结构**（顶层直接是 form/filingDate 等并列数组，**没有** `filings.recent` 嵌套），
+   > 直接套主文件的解析会 KeyError。→ 用现成脚本 `python scripts/edgar_list_all.py <CIK> --form 10-K --log _all.txt`
+   > 一次列出全量（含历史），不必手写遍历脚本。
 3. **下载**：`urllib.request` **必须带 `User-Agent`**（SEC 对无 UA 请求返回 403），例如
    `UA = "EnterpriseAnalyst/1.0 (analyst@example.com)"`。
    > **坑（必踩）**：4 MB 文件用 `urlopen(...).read()` 会 **`IncompleteRead`**（只读到 ~4 MB 就断）。
@@ -720,7 +735,10 @@ LIFO 公司存货账面值与毛利率不可与 A/H 股同行直比；审计意�
 
 - `scripts/extract_pdf_text.py` — 通用 PyMuPDF PDF 文本提取脚本，支持中文财报，支持命令行参数
 - `scripts/hkex_fetch.py` — **港股财报检索下载**（Step 0 分支 C）：披露易 hkexnews 搜索 API（title 参数失效，全量拉取后本地按 TITLE 分类）→ 近5年年报+招股书+最近中报 → PDF 下载 + `%PDF` 校验。标准库，managed python 可跑
-- `scripts/edgar_fetch.py` — **美股/中概股财报检索下载**（Step 0 分支 C）：SEC EDGAR submissions API（CIK 补零到 10 位）→ 按默认套装选 20-F/424B4/6-K → 抓 index 页挑主文档 → 分块下载 + 转纯文本 + 自动判定财年。标准库，managed python 可跑
+- `scripts/edgar_fetch.py` — **美股/中概股财报检索下载**（Step 0 分支 C）：SEC EDGAR submissions API（CIK 补零到 10 位）→ 按默认套装选 **20-F/10-K**/424B4/6-K（同时识别美国本土公司与中概股）→ 抓 index 页挑主文档 → 分块下载 + 转纯文本 + 自动判定财年。标准库，managed python 可跑
+- `scripts/edgar_list_all.py` — **SEC 全量 filing 检索（含历史分页）**：`filings.recent` 只留近 1000 条，追多年须遍历 `filings.files` 分页文件（扁平结构）。列全量 accession，配合 `--acc` 精确下载。标准库
+- `scripts/extract_series.py` — **从多份年报 .txt 拼接近 N 年财务序列**（营收/净利/经营现金流）：美股 20-F/A 股年报逐年滚动披露三年数据，重叠年份交叉验证，自动逐份提取→按财年去重→拼接。标准库
+- `scripts/cleanup.py` — **收尾通用中间文件清理**（Step 4）：默认 dry-run 预览、`--apply` 才删；只删 `_` 前缀/命中提示词的中间文件，自动保留财报原文与报告。替代每次现写又删的临时清理脚本
 - `scripts/cninfo_fetch.py` — **A 股财报公告检索/下载**（Step 0 分支 C）：巨潮资讯网 API，按代码+类别拉一手公告 PDF。标准库，managed python 可跑
 - `scripts/ima_doc_prepare.py` — **长文档预处理**（Step 1）：清洗 `fetch_media_content` 落地的 JSON/转义文本 → `_clean.md`，并生成 `_index.txt` 关键词行号索引。**支持传目录批量处理（推荐，避开中文名传参问题）**。仅用标准库
 - `scripts/ima_upload_cos.py` — **ima 上传第二步**（Step 3.8）：读 `create_media` 凭证 JSON → 上传 COS → 结果落盘。需 venv python（`cos-python-sdk-v5`）

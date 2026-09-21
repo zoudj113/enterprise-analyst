@@ -209,7 +209,10 @@ def select_standard(rows, years=5, want_6k=True, max_probe=8, include_amend=Fals
     plan = []
     seen = set()
 
-    annuals = sorted([r for r in rows if keep(r, "20-F")],
+    # 年报表单：外国私人发行人（中概股等）用 20-F，美国本土公司用 10-K。
+    # 二者都要纳入默认套装，否则美国公司会颗粒无收（2026-09 Alphabet 教训）。
+    annuals = sorted([r for r in rows if r["form"] in ("20-F", "10-K")
+                      and (include_amend or "/A" not in r["form"])],
                      key=lambda r: r["filingDate"], reverse=True)
     # 同一财年可能有多份（修订稿），按 filing 年份去重留最新
     by_year = {}
@@ -218,7 +221,8 @@ def select_standard(rows, years=5, want_6k=True, max_probe=8, include_amend=Fals
         by_year.setdefault(y, r)
     for y in sorted(by_year, reverse=True)[:years]:
         r = by_year[y]
-        plan.append(dict(r, tag="20F_%d" % (y - 1), kind="annual"))
+        tag = "10K_%d" % (y - 1) if r["form"] == "10-K" else "20F_%d" % (y - 1)
+        plan.append(dict(r, tag=tag, kind="annual"))
         seen.add(r["accession"])
 
     for r in rows:
