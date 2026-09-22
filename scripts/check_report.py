@@ -3,20 +3,35 @@
 企业分析报告交付前自检（enterprise-analyst Step 3.5）
 
 用法：
-    python scripts/check_report.py <报告文件.html|报告文件.md>
+    python scripts/check_report.py <报告文件.html|报告文件.md> [--log 日志文件]
 
-检查项：
-    0. 文件命名规范（{公司}_分析报告_{YYYYMMDD}.html）
-    1. HTML 标签闭合
-    2. 表格列数一致性（表头 vs 各数据行）
-    3. canvas 与 Chart.js 注册配对
-    4. 时间列排序规则（最新期间必须在最左）
-    5. 必备章节
-    6. 免责声明 / 数据来源
-    7. 第 0 层硬伤核验痕迹（须写明审计意见，不得凭印象）
-    8. 常驻侧边目录（sticky TOC + 锚点配对 + 滚动高亮）
+检查项（16 项，脚本内编号 [0]–[13]）：
+    [0]    文件命名规范（{公司}_分析报告_{YYYYMMDD}.html）
+    [1]    HTML 标签闭合
+    [2]    表格列数一致性（表头 vs 各数据行）
+           ⚠ 统计的是 <td> 标签个数、**不展开 colspan**，因此汇总行禁用 colspan；
+             rowspan 已被正确补占位，可放心用。
+    [2b]   数值列表头对齐（数值列 ⊇50% 带 num-c 时，表头 <th> 也必须带 num-c）
+    [3]    canvas 与 Chart.js 注册配对（双向，含 aria-label）
+    [4]    时间列排序规则（最新期间必须在最左；预测年也算期间）
+    [5]    必备章节（**字面匹配**，如「结论」不算「总结」）
+    [6]    数据来源 / 免责声明
+    [7]    第 0 层硬伤核验痕迹（须写明审计意见，不得凭印象）
+    [8]    常驻侧边目录（sticky TOC + 锚点配对 + 回到顶部锚点）
+    [9]    产品用途与客户映射表（企业概况必备）
+    [10]   行业地位与竞争格局（独立章节 + 至少命中 3 项信号）
+    [10.5] 护城河四问与证据链（证据表 / 巨资测试 / 章末明确结论）
+    [11]   反空值检查（num-c 单元格不得留空占位符）
+    [12]   绝对化词扫描 —— 硬档（不可复制/完美/必然…）出现即 FAIL；
+           软档（唯一/垄断/第一/领先…）同行内无数字且无出处标记则 WARN
+    [13]   定性结论出处标注 —— 【源】/【推】/【判】合计须 ≥3 处；
+           另附加提示护城河结论句附近是否有依据（WARN，不阻塞）
+           [12][13] 规则详见 references/qualitative_discipline.md（2026-09-22 新增）
 
 退出码：0 = 全部通过；1 = 有 FAIL。
+
+配套「报告写作前清单」见 references/pre_write_checklist.md —— **动笔前过一遍**，
+让本自检一次通过，避免写完返工（2026-09-22 美股 Meta 报告首轮 19 项 FAIL、返工三轮的教训）。
 """
 import re
 import sys
@@ -511,6 +526,83 @@ def main():
             print("    OK 数值列无空占位符")
     else:
         print("    --  Markdown 模式：请人工检查表格无空值")
+
+    # ---------- 12. 绝对化词扫描（定性用词纪律）----------
+    # 规则源：references/qualitative_discipline.md 第五节
+    print("\n[12] 绝对化词扫描（定性用词纪律）")
+    if is_html:
+        _body = re.sub(r'<(script|style)[\s\S]*?</\1>', ' ', html, flags=re.I)
+        _body = re.sub(r'<[^>]*>', ' ', _body)
+    else:
+        _body = re.sub(r'```[\s\S]*?```', ' ', html)      # Markdown：去掉代码块
+    _body = _body.replace('&nbsp;', ' ')
+    _lines = _body.splitlines()
+
+    # 硬档：财务分析语境下无正当用途 —— 出现即 FAIL
+    HARD_WORDS = ("不可复制", "不可撼动", "完美", "无可挑剔", "极致", "极佳", "必然",
+                  "永远", "No.1", "NO.1", "零风险", "稳赚", "绝对领先", "无可比拟",
+                  "独一无二", "100%确定")
+    # 软档：可用但须有代价 —— 同行内有数字或出处标记即豁免，否则 WARN
+    # 词表只收「高置信营销词组」：单字与泛词（最/全部/第一/领先）误报过多已剔除，
+    # 例如「绝对值」「第一问」「第一梯队」「影响最大」都是正常表述。
+    SOFT_WORDS = ("唯一", "垄断", "龙头", "领先地位", "绝对优势", "绝对领先",
+                  "全球第一", "行业第一", "全国第一", "排名第一", "世界第一",
+                  "最强", "最优", "最佳", "最先进", "最具", "霸主", "王者", "天花板")
+    EVIDENCE_RE = re.compile(r'[0-9]|【源】|【推】|【判】|【公司自述】')
+    # 「唯一」在股权/法律语境下是事实描述（如"Class B 股的唯一控制人"），不算营销词
+    SOFT_EXEMPT_RE = re.compile(r'唯一(?:的)?(?:控制人|股东|持有人|表决权|投票权|真源|法定)')
+
+
+    hard_hits, soft_hits = [], []
+    for _ln, _t in enumerate(_lines, 1):
+        _t = _t.strip()
+        if not _t:
+            continue
+        for _w in HARD_WORDS:
+            if _w in _t:
+                hard_hits.append((_ln, _w, _t[:70]))
+        for _w in SOFT_WORDS:
+            if _w in _t and not EVIDENCE_RE.search(_t) and not SOFT_EXEMPT_RE.search(_t):
+                soft_hits.append((_ln, _w, _t[:70]))
+
+    if hard_hits:
+        for _ln, _w, _t in hard_hits[:12]:
+            fail(f"[12] 硬档绝对化词「{_w}」（行 {_ln}）：{_t}")
+            print(f"    FAIL 行 {_ln} 「{_w}」: {_t}")
+        if len(hard_hits) > 12:
+            print(f"    ...另有 {len(hard_hits) - 12} 处")
+        print("    解法：硬档词无豁免路径，拆成可验证的句子（见 qualitative_discipline.md 第六节）")
+    else:
+        print("    OK 无硬档绝对化词")
+    if soft_hits:
+        print(f"    注意 软档词 {len(soft_hits)} 处同行内既无数字也无出处标记（不阻塞交付，建议补）：")
+        for _ln, _w, _t in soft_hits[:8]:
+            print(f"        行 {_ln} 「{_w}」: {_t}")
+    else:
+        print("    OK 软档词均有数字/出处支撑")
+
+    # ---------- 13. 定性结论出处标注 ----------
+    # 规则源：references/qualitative_discipline.md 第三、八节
+    print("\n[13] 定性结论出处标注（【源】/【推】/【判】）")
+    _marks = {}
+    for _m in ("【源】", "【推】", "【判】", "【疑】", "【公司自述】"):
+        _c = _body.count(_m)
+        if _c:
+            _marks[_m] = _c
+    _total = sum(_marks.values())
+    _detail = "  ".join(f"{k}×{v}" for k, v in _marks.items()) or "(无)"
+    if _total < 3:
+        fail(f"[13] 定性结论出处标记仅 {_total} 处（要求 ≥3）：{_detail} —— 见 qualitative_discipline.md")
+        print(f"    FAIL {_total} 处（要求 ≥3）  {_detail}")
+        print("    解法：护城河 / 竞争格局 / 风险成因等关键定性句挂【源】/【推】/【判】")
+    else:
+        print(f"    OK {_total} 处  {_detail}")
+    # 附加（WARN，不 FAIL）：护城河章末结论句附近应有出处或量化依据
+    _mo = re.search(r'护城河[^。；\n]{0,16}(?:宽阔|较深|较浅|狭窄|不存在|存疑|未发现)', _body)
+    if _mo:
+        _seg = _body[max(0, _mo.start() - 100): _mo.end() + 220]
+        if not EVIDENCE_RE.search(_seg):
+            print("    注意 护城河结论句附近未见出处标记或量化依据，建议补（第四节「公司自述打折」）")
 
     # ---------- 汇总 ----------
     print("\n" + "=" * 56)

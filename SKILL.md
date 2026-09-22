@@ -208,6 +208,45 @@ python scripts/edgar_fetch.py 1737806 --out ./_src --to-text --log _dl.txt
 | `--to-text` | iXBRL HTML 转 .txt（标准库剥标签，不需要 pypdf） |
 | `--log <file>` | **PowerShell 重定向中文会乱码**，用这个写 UTF-8 |
 
+**补：多年财务序列用 XBRL 一次拿全（建议下完原文就接着跑）**
+
+下到 5 份 10-K 只解决了「有原文」，但把 2018–2025 的营收 / 利润 / 现金流逐项从 5 份 .txt 里 Grep 出来
+要多花十几轮。**先用 XBRL 结构化接口一次拿全序列建骨架，再回原文核对关键数字**：
+
+```bash
+<python> scripts/fetch_facts.py 1326801 --from 2018 --to 2025 --scale yi --json facts.json
+```
+
+- 数据与年报原文**同源**（同一份 10-K 的 XBRL 标签），但已结构化，直接输出**最新财年在最左**的
+  Markdown 表（符合时间列规则），可整段粘进报告。
+- `--scale yi` 出「亿美元」（中文报告口径）；`--form 20-F` 用于中概股；`--tag` 只取指定标签。
+- **坑 1（本次踩过）**：时点型科目（资产负债表）的 fact **没有 `start` 字段**——若统一按「跨满一年」过滤，
+  资产负债表会整片抓空。脚本已按期间型 / 时点型分路处理。
+- **坑 2**：财年 key 必须用 `end` 日期年份，**不能用 fact 的 `fy`**——一份 10-K 里三年对比数据的 `fy` 相同，会互相覆盖。
+- **坑 3**：同一科目会因公司改名而断档（如 Meta 2019 年起把固定资产并入
+  「固定资产 + 融资租赁使用权资产」标签），默认套装已同时收录两个，输出中两行互补。
+  输出里的 `—` **不等于金额为零**，须回原文确认。
+- 与 `scripts/extract_series.py` 的分工：本脚本建**骨架序列** + **做重叠年份交叉校验**；
+  `extract_series.py` 仅在 XBRL 断档时作单一值兜底，不做交叉校验。
+
+**补：重叠年份交叉校验（自动跑，无需额外参数）**
+
+美股接续的三份年报会让**同一财年**在同一年看多份文件里各出现一次（如 FY2023 同时见于 FY2023/FY2024/FY2025 三份 10-K 的比较列）。
+这是**免费的交叉校验点**——脚本会自动把每个期间在所有文件里的取值逐一比对：
+
+```bash
+# 默认开启校验；发现不一致会打印「疑似重述 / 口径变更」并以退出码 2 结束（非致命）
+<python> scripts/fetch_facts.py 1326801 --from 2018 --to 2025 --scale yi --json facts.json
+# 只想要序列、不想看校验结果时：
+<python> scripts/fetch_facts.py 1326801 --from 2018 --to 2025 --no-verify
+```
+
+- 输出形如「可交叉验证区间：N 个 / 发现 M 处不一致」，逐条给出期间、两次取值、各自所属 accession。
+- **不一致≠造假，但必须回原文看口径**。Meta 实测 4 处不一致全部落在「购置固定资产」——根因是
+  FY2023 10-K 的科目名「Purchases of property and equipment, net」（净额）与 FY2025 10-K 的
+  「Purchases of property and equipment」（毛额）**口径变更**，而非数据被改。这类信号要在报告里注明。
+- 校验依赖 XBRL——若某科目 XBRL 未覆盖（少见），该科目不参与校验，不报错。
+
 **手工链路的要点**（脚本失效时要知道这些）：
 
 1. **查 CIK**：`https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company=<英文名>&type=&dateb=&owner=include&count=40`
@@ -282,7 +321,11 @@ python        scripts/ima_doc_prepare.py  <下载目录>                # 目录
 **ima 长文本处理要点**：年报全文可达数十万字符，**禁止直接 Read 整份**。正确做法是先用 Grep 定位关键词行号，再写一段 Python 脚本按行切片输出到若干小文件（如 `_part1.txt`），逐段 Read。分析完成后必须清理所有中间文件。
 
 > **Windows 清理中间文件必须用 Python `os.remove`**：本机 PowerShell `Remove-Item` 会静默失败（文件仍在），
-> Bash `rm` 也可能因 shim 缺 `rm`/`dirname` 报 command not found。用 `<python>` 或装了包的 `<venv-python>` 执行。
+> **Bash 外部命令报 `command not found` 时，不要改用 PowerShell**（更慢）。成因：WorkBuddy 的 shim 脚本
+> `shell-runtime-bash-env.sh` 第 3 行调用 `dirname` 时 `/usr/bin` 尚未进 PATH（鸡生蛋），脚本提前退出，
+> 于是 `ls` / `head` / `dirname` / `which` 等全部找不到。**命令本身都在**——解法是在命令开头加一句
+> `export PATH="/usr/bin:/bin:$PATH";` 即完全恢复（shell state 不持久，每条命令都要带；2026-09-22 实测）。
+> `<python>` / `<venv-python>` 亦可直接执行。
 > **坑**：`shutil.rmtree(dir, ignore_errors=True)` 经常「文件删光但目录壳还在」——删完必须
 > `os.listdir` 复核，若目录仍存在再 `shutil.rmtree` 一次或逐层 `os.rmdir`。
 
@@ -295,7 +338,7 @@ python        scripts/ima_doc_prepare.py  <下载目录>                # 目录
    `python scripts/ima_doc_prepare.py <原始.txt> [-o 输出目录] [-k 关键词文件]`
    一次产出 `{名}_clean.md` + `{名}_index.txt`（关键词 → 行号）。**不要现写 probe/conv/idx 三个脚本各跑一轮**。
 3. **定位用 Grep 精确命中，不要靠行号盲读。** 长文档先 Grep 关键词拿行号，再 Read 该行号前后 ±N 行。按行号猜测的命中率约五成，会反复补读（本次 2025+2023 两份年报精读共耗 17 轮）。
-4. **Windows 命令类操作有隐藏成本**：Bash 常损坏、PowerShell 不回显 stdout，每条命令都要「写 UTF-8 文件 → Read」两次往返，等于命令类操作轮次翻倍。**能合并进 Python 脚本的逻辑一律合并**，不要拆成多条命令。
+4. **Windows 命令类操作有隐藏成本**：PowerShell **不回显 stdout**，每条命令都要「写 UTF-8 文件 → Read」两次往返，轮次翻倍。→ **优先用 Bash 工具**；若报 `command not found`，加 `export PATH="/usr/bin:/bin:$PATH";` 前缀即可（2026-09-22 实测，不要因此改走 PowerShell）。**能合并进 Python 脚本的逻辑一律合并**，不要拆成多条命令。
 5. **报告写作一次性写大块**：HTML 报告分 4+ 次 Edit 插入章节会显著增加轮次，尽量 2 次以内（骨架 + 主体），最后单独补图表脚本与导航。
 
 ### 输出格式与命名（Step 3）
@@ -335,16 +378,27 @@ python        scripts/ima_doc_prepare.py  <下载目录>                # 目录
 
 > **Markdown 分支**：Markdown 无法做 sticky 侧栏，退化为文首普通目录列表即可。
 
+### 报告写作前清单（Step 3 动笔前，必读）
+
+**动笔写 HTML 之前，先过一遍 `references/pre_write_checklist.md`**，把自检规则前置成写作规则。
+自检由此从「交付前验收」变成「事后复核」，可省掉「写完首轮 19 项 FAIL → 返工三轮」的循环
+（2026-09-22 美股 Meta 报告实测代价）。
+
+清单把 `check_report.py` 的全部硬规则操作化：先定 **6 件结构性问题**（文件名 / 章节骨架 / 锚点配对 /
+canvas 清单 / 数值表头 `num-c` / 行业地位的三项信号），再逐项给出「怎么写就过检」的正例写法与踩坑实例。
+
 ### 交付前自检（Step 3.5，必做）
 
 ```bash
-python scripts/check_report.py <报告文件.html|.md>
+<python> scripts/check_report.py <报告文件.html|.md>
 ```
 
-覆盖 11 类检查：HTML 标签闭合 → 表格列数一致性 → canvas 与图表注册配对 → **时间列排序规则** →
-必备章节完整性 → 数据来源与免责声明 → **第 0 层硬伤核验痕迹（须写明审计意见，不得凭印象）** →
-常驻侧边目录 → 产品用途与客户映射表 → 行业地位与竞争格局 → **护城河四问与证据链**（证据表 /
-巨资测试 / 章末明确结论，见 `references/moat_framework.md`）→ 反空值检查。退出码 0 才可交付，
+覆盖 16 个检查项（脚本内编号 [0]–[13]）：文件命名 → HTML 标签闭合 → 表格列数一致性 →
+数值列表头对齐 → canvas 与图表注册配对 → **时间列排序规则** → 必备章节完整性 →
+数据来源与免责声明 → **第 0 层硬伤核验痕迹（须写明审计意见，不得凭印象）** → 常驻侧边目录 →
+产品用途与客户映射表 → 行业地位与竞争格局 → **护城河四问与证据链**（证据表 / 巨资测试 /
+章末明确结论，见 `references/moat_framework.md`）→ 反空值检查 → **`[12]` 绝对化词扫描** →
+**`[13]` 定性结论出处标注**（≥3 处，见 `references/qualitative_discipline.md`）。退出码 0 才可交付，
 有 FAIL 必须修完再交付。
 
 > 已知豁免：**瀑布图**等流程型图表的横轴是推导路径而非并列期间，不受「最新在最左」约束，
@@ -760,6 +814,34 @@ LIFO 公司存货账面值与毛利率不可与 A/H 股同行直比；审计意�
 - 报告末尾注明数据来源和会计准则；**外部联网数据须单列一项**，并注明"非公司披露内容，仅用于交叉验证"，与公司一手披露数据严格区分
 - 多份财报分析（同一公司多年）时按年份排成时间序列；**多家公司对比时**在财务指标与护城河章节后追加一张**横向对比矩阵**（行=公司，列=核心指标，最新期在最左），并在总结中给排序结论
 
+### check_report.py 自检常见 FAIL 与解法（2026-09-22 美股 Meta 报告实战）
+
+写完 HTML 立刻跑自检，以下是高频 FAIL 的根因与一次性解法（**写的时候避开，比事后返工快得多**）：
+
+1. **表 #N 列数不一致 → 99% 是 `colspan` 引起的**。
+   `row_layout()` 统计的是 `<td>` **标签个数**，不展开 `colspan`。所以 `<td colspan="4">` 只算 1 格，
+   汇总行（尤其是 `<tfoot>` 里的「合计」行）必然判 FAIL。
+   **解法：报告里一律不用 `colspan`**——跨列汇总改写为表下方的独立 `<p>` 段落（如「票据本金余额：840.00 亿美元，到期 2027–2066 年」）。
+2. **反空值检查（[11]）**：`class="num-c"` 的单元格里出现 `—` / `-` / `空串` / `无` / `未披露` 一律 FAIL。
+   **解法**：能补就补真实数字；确实没有的就写**具体理由文本**（`基准年`、`0.00`、`不适用（同比指标）`、`仅披露年度值`），
+   这些都不在占位符黑名单里。**不要写「未披露」两个字**，它在黑名单内。空 `<td></td>` 也算空值。
+3. **必备章节（[5]）是字面硬匹配**：必须出现「核心财务指标」（或「财务概要」）、「经营数据分析」（或「经营情况」）、「总结」。
+   章节标题写「结论」不算「总结」——改成「结论与总结」或另加一节。
+4. **产品映射表（[9]）**：`<th>` 里必须出现「工业用途 / 直接客户 / 终端行业 / 下游客户」任一**字面**。
+   消费互联网公司没有「工业用途」，把表头设计为「产品｜是什么（形态）｜用途：解决什么需求｜直接客户（谁付费）｜终端行业（广告主所属行业）」即可过检且不失真。
+5. **行业地位（[10]）需命中 3 项信号**：行业规模/市场规模、竞争格局、资源自给率、单位成本/成本曲线、市占率。
+   互联网公司拿不到「自给率/成本曲线」，就用「行业规模 + 竞争格局 + 市占率」三项，市占率须给**具体百分比数字**。
+6. **护城河章末结论（[10.5]）**：正则要求「护城河」16 字内紧跟（宽阔|较深|较浅|狭窄|不存在|存疑|未发现）。
+   直接写「**Meta 的护城河宽阔**，核心支撑是 X（证据 Y），最大威胁是 Z」。
+7. **时间列（[4]）**：预测年在前也不行——`2025 年 | 2026 年（预测）` 是升序，会 FAIL；必须 `2026 年（预测） | 2025 年`。
+
+### 回传 ima 时的格式坑（美股原文）
+
+`create_media` 的 `content_type` 对照表**没有 `.htm`**（只认 `html→text/html`、`txt→text/plain`），
+扩展名对不上应拒绝上传、不要猜。因此**SEC 下载的 `.htm` 原始文件不能直接传**，
+改传同一份 filing 转换出的 **`.txt`（text/plain）**；报告传 `.html`（text/html）。
+批量上传复用 `scripts/ima_upload_cos.py`（读凭证 JSON → COS → 结果落盘），需 venv python。
+
 ## 资源文件
 
 **规则优先级**：本 SKILL.md 是**唯一规则源**。`references/` 下的文件只放模板、版式与操作细节，
@@ -770,12 +852,15 @@ LIFO 公司存货账面值与毛利率不可与 A/H 股同行直比；审计意�
 - `scripts/hkex_fetch.py` — **港股财报检索下载**（Step 0 分支 C）：披露易 hkexnews 搜索 API（title 参数失效，全量拉取后本地按 TITLE 分类）→ 近5年年报+招股书+最近中报 → PDF 下载 + `%PDF` 校验。标准库，managed python 可跑
 - `scripts/edgar_fetch.py` — **美股/中概股财报检索下载**（Step 0 分支 C）：SEC EDGAR submissions API（CIK 补零到 10 位）→ 按默认套装选 **20-F/10-K**/424B4/6-K（同时识别美国本土公司与中概股）→ 抓 index 页挑主文档 → 分块下载 + 转纯文本 + 自动判定财年。标准库，managed python 可跑
 - `scripts/edgar_list_all.py` — **SEC 全量 filing 检索（含历史分页）**：`filings.recent` 只留近 1000 条，追多年须遍历 `filings.files` 分页文件（扁平结构）。列全量 accession，配合 `--acc` 精确下载。标准库
-- `scripts/extract_series.py` — **从多份年报 .txt 拼接近 N 年财务序列**（营收/净利/经营现金流）：美股 20-F/A 股年报逐年滚动披露三年数据，重叠年份交叉验证，自动逐份提取→按财年去重→拼接。标准库
+- `scripts/extract_series.py` — **从多份年报 .txt 兜底拼接近 N 年财务序列**（营收/净利/经营现金流）：多格式正则逐份提取→按财年去重→拼接，每个财年只留**单一权威值**（同财年多份文件时取覆盖最全的一份）。**已知边界：正则无法可靠重建「一份年报=一张表三年列」的结构，故不做重叠年份交叉验证**（交叉验证见 `fetch_facts.py`）。仅作 XBRL 断档时的补位。标准库
 - `scripts/cleanup.py` — **收尾通用中间文件清理**（Step 4）：默认 dry-run 预览、`--apply` 才删；只删 `_` 前缀/命中提示词的中间文件，自动保留财报原文与报告。替代每次现写又删的临时清理脚本
 - `scripts/cninfo_fetch.py` — **A 股财报公告检索/下载**（Step 0 分支 C）：巨潮资讯网 API，按代码+类别拉一手公告 PDF。标准库，managed python 可跑
 - `scripts/ima_doc_prepare.py` — **长文档预处理**（Step 1）：清洗 `fetch_media_content` 落地的 JSON/转义文本 → `_clean.md`，并生成 `_index.txt` 关键词行号索引。**支持传目录批量处理（推荐，避开中文名传参问题）**。仅用标准库
 - `scripts/ima_upload_cos.py` — **ima 上传第二步**（Step 3.8）：读 `create_media` 凭证 JSON → 上传 COS → 结果落盘。需 venv python（`cos-python-sdk-v5`）
-- `scripts/check_report.py` — **交付前自检脚本（Step 3.5 必跑）**：标签闭合 / 表格列数 / canvas 注册 / **时间列排序** / 必备章节 / 数据来源与免责。退出码 0 才可交付
+- `scripts/check_report.py` — **交付前自检脚本（Step 3.5 必跑）**：16 项检查 `[0]`–`[13]`（命名 / 标签闭合 / 表格列数 / 数值列表头对齐 / canvas 注册 / **时间列排序** / 必备章节 / 数据来源与免责 / 第 0 层硬伤核验 / 常驻侧边目录 / 产品映射表 / 行业地位 / 护城河四问 / 反空值 / **`[12]` 绝对化词扫描** / **`[13]` 定性结论出处标注**）。退出码 0 才可交付。**写作纪律细则见 `references/qualitative_discipline.md`，配套写作前清单见 `references/pre_write_checklist.md`**
+- `scripts/fetch_facts.py` — **SEC XBRL 多年财务序列抓取**（Step 2，美股 / 中概股）：`companyconcept` 接口逐标签拉取，一次拿 10+ 年利润表 / 现金流 / 资产负债表；自动区分**期间型 / 时点型**（时点型无 `start` 字段，须分路处理，否则资产负债表整片抓空）；同一财年取最新申报值；输出「最新财年在最左」的 Markdown 表。标准库，managed python 可跑
+- `references/pre_write_checklist.md` — **报告写作前清单**（Step 3 动笔前必读）：把 `check_report.py` 的全部硬规则前置为写作规则，含「动笔前先定 6 件事」、逐项正例写法与踩坑实例
+- `references/qualitative_discipline.md` — **定性结论与用词纪律**：定性判断四分法（【源】/【推】/【判】/【疑】）、卖方自夸打折、绝对化词禁用清单（硬档/软档 + 改写示例）、刷新搬运禁忌，对应自检 `[12]`/`[13]`
 - `references/enterprise_analyst_prompt.md` — 完整分析提示词与示例输出节选（**示例表头已遵守时间列规则**）
 - `references/html_report_template.md` — **HTML 单文件报告模板（默认输出）**：完整 CSS、两栏布局、**sticky 侧边目录 + 滚动高亮脚本**、配色语义、常用图表片段。写 HTML 报告时直接复用，不要从零写样式
 - `references/attribution_analysis.md` — **经营变动归因方法**（触发阈值 ±10%、四件套、连环替代法、可修复性分档、外部交叉验证路径与标注规则）

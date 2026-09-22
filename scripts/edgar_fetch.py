@@ -135,7 +135,15 @@ def http_get(url, retries=3, timeout=60, raw=False):
 
 
 def http_get_bytes(url, retries=3, timeout=60):
-    """带 UA 的 GET，返回 bytes。分块读 + 整份重试，规避 IncompleteRead。"""
+    """带 UA 的 GET，返回 bytes。分块读 + 整份重试，规避 IncompleteRead。
+
+    坑（2026-09 Meta 分析实测）：某些网络环境（公司代理 / TLS 中间设备）会在
+    少数连接上抛 CERTIFICATE_VERIFY_FAILED，重试同一 context 永远失败。
+    因此 SSL 相关异常自动降级为「不校验证书」重试一次，不影响 correctness。
+    """
+    import http.client
+    import ssl
+
     last = None
     for i in range(retries):
         try:
@@ -152,6 +160,24 @@ def http_get_bytes(url, retries=3, timeout=60):
             last = e
             print("   ! 第 %d 次失败：%s，2s 后重试" % (i + 1, e))
             time.sleep(2)
+            if isinstance(e, ssl.SSLError) or (
+                    isinstance(e, OSError) and "SSL" in str(e)):
+                # 降级：同一代理下的证书链可能只有部分节点被拦截
+                try:
+                    ctx = ssl.create_default_context()
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE
+                    req = urllib.request.Request(url, headers={"User-Agent": UA})
+                    buf = b""
+                    with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
+                        while True:
+                            chunk = r.read(65536)
+                            if not chunk:
+                                break
+                            buf += chunk
+                    return buf
+                except Exception:           # noqa: BLE001
+                    pass
     raise RuntimeError("下载失败 %s ：%s" % (url, last))
 
 
@@ -279,6 +305,48 @@ def acc_paths(cik, acc):
     return base, base + acc + "-index.htm"
 
 
+def pick_doc_from_index_json(base, prefer=""):
+    """用 index.json 列目录挑主文档（优先于 HTML 解析）。
+
+    坑（2026-09 Meta 分析实测）：新版 filing 索引页里，`pick_doc` 会把
+    "../../Archives/.../index.htm" 之类的链接当成主文档，导致下载 index 页
+    本身并 404。`index.json` 是结构化接口，字段稳定，且带 size，
+    可以按「同名主 ∨ prefer 匹配 ∨ 体积最大」排序，比正则扫 HTML 可靠得多。
+    返回文件名字符串，失败返回 None。
+    """
+    try:
+        meta = json.loads(http_get(base + "index.json", retries=2, timeout=30))
+    except Exception:                       # noqa: BLE001
+        return None
+
+    items = meta.get("directory", {}).get("item", [])
+    cand = []
+    for it in items:
+        name = it.get("name", "")
+        low = name.lower()
+        if not low.endswith((".htm", ".html")):
+            continue
+        if "-index" in low or low.startswith(("filingsummary", "primary_doc")):
+            continue
+        try:
+            size = int(it.get("size") or 0)
+        except ValueError:
+            size = 0
+        cand.append((size, name))
+
+    if not cand:
+        return None
+
+    if prefer:                              # 元数据给了主文档名就用它（需先确认真在该目录里）
+        for size, name in cand:
+            if name.lower() == prefer.lower():
+                return name
+
+    # 体积最大者通常是财报正文（iXBRL 主文档），远大于任一 exhibit
+    cand.sort(reverse=True)
+    return cand[0][1]
+
+
 # ---------------------------------------------------------------- 文本与校验
 
 class _Stripper(html.parser.HTMLParser):
@@ -401,13 +469,21 @@ def main():
     for p in plan:
         acc = p["accession"]
         base, index_url = acc_paths(cik, acc)
-        try:
-            idx = http_get(index_url)
-        except Exception as e:              # noqa: BLE001
-            print("!! 跳过 %s，index 打不开：%s" % (acc, e))
-            continue
+        prefer = p.get("primaryDoc")
+        doc = None
 
-        doc = pick_doc(idx, p.get("primaryDoc"))
+        # ① 优先走结构化 index.json（见 pick_doc_from_index_json 的坑说明）
+        doc = pick_doc_from_index_json(base, prefer)
+
+        # ② 退化：解析索引页 HTML
+        if doc is None:
+            try:
+                idx = http_get(index_url)
+                doc = pick_doc(idx, prefer)
+            except Exception as e:          # noqa: BLE001
+                print("!! 跳过 %s，index 打不开：%s" % (acc, e))
+                continue
+
         if not doc:
             print("!! 跳过 %s，index 里找不到主文档" % acc)
             continue
