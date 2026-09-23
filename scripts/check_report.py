@@ -651,7 +651,7 @@ def main():
     print("\n[15] 英文缩写首现展开检查（提示）")
     ACR_WL = {
         "SEC", "IPO", "CEO", "CFO", "COO", "CTO", "AI", "ML", "LLM", "GPU", "CPU", "IT",
-        "US", "USA", "UK", "EU", "HTML", "PDF", "URL", "API", "ID", "OK",
+        "US", "USA", "UK", "EU", "HK", "HTML", "PDF", "URL", "API", "ID", "OK",
         "Q1", "Q2", "Q3", "Q4", "H1", "H2", "FY", "YTD", "QOQ", "YOY", "LTM", "CAGR",
         "EPS", "PE", "PB", "PS", "ROE", "ROA", "ROIC", "TTM", "EBIT", "EBITDA",
         "GAAP", "IFRS", "ADR", "ETF", "GDP", "CPI", "PMI", "FDI", "M&A",
