@@ -5,7 +5,7 @@
 用法：
     python scripts/check_report.py <报告文件.html|报告文件.md> [--log 日志文件]
 
-检查项（16 项，脚本内编号 [0]–[13]）：
+检查项（18 项，脚本内编号 [0]–[15]）：
     [0]    文件命名规范（{公司}_分析报告_{YYYYMMDD}.html）
     [1]    HTML 标签闭合
     [2]    表格列数一致性（表头 vs 各数据行）
@@ -27,6 +27,12 @@
     [13]   定性结论出处标注 —— 【源】/【推】/【判】合计须 ≥3 处；
            另附加提示护城河结论句附近是否有依据（WARN，不阻塞）
            [12][13] 规则详见 references/qualitative_discipline.md（2026-09-22 新增）
+    [14]   高风险术语首现自解释 —— 【读者假设：第一次接触这家公司，且未必懂会计】
+           Level 1/2/3、VIE、KAM、商誉、股份支付… 等术语出现时，首现处必须有中文解释，
+           或全文存在「术语注解/名词解释」区块且该术语在区块内被定义。缺则 FAIL。
+    [15]   英文缩写首现展开（提示级，不阻塞）—— 自动抽取全文 2–6 位大写缩写，
+           首现处既无中文括注也无「英文全称（缩写）」形式的，列为提示。
+           [14][15] 规则详见 references/qualitative_discipline.md 第八节（2026-09-23 新增）
 
 退出码：0 = 全部通过；1 = 有 FAIL。
 
@@ -603,6 +609,89 @@ def main():
         _seg = _body[max(0, _mo.start() - 100): _mo.end() + 220]
         if not EVIDENCE_RE.search(_seg):
             print("    注意 护城河结论句附近未见出处标记或量化依据，建议补（第四节「公司自述打折」）")
+
+    # ---------- 14. 高风险术语是否给出定义（读者假设：外行）----------
+    # 规则源：references/qualitative_discipline.md 第八节
+    # 教训：2026-09-23 Amazon 报告写「Level 3 主观估值」，读者追问「这是什么意思、你从哪里找来的」
+    print("\n[14] 高风险术语是否给出定义（读者假设：外行）")
+    JARGON = ("Level 1", "Level 2", "Level 3",
+              "VIE", "可变利益实体", "KAM", "关键审计事项",
+              "DLOM", "AOCI", "ASC 820", "ASC 606", "ASC 842",
+              "Non-GAAP", "净现金转换周期", "剩余履约义务", "未确认履约义务")
+
+    def _term_defined(_t):
+        # 定义式①：术语后紧跟冒号/等号/破折号，且其后有实质内容（中文或 ≥4 字母英文）
+        for _m in re.finditer(re.escape(_t) + r'\s*(?:[:：=＝]|——|—)\s*(.{4,140})', _body):
+            if re.search(r'[\u4e00-\u9fff]|[A-Za-z]{4,}', _m.group(1)):
+                return True
+        # 定义式②：术语后紧跟中文括注，且括注 ≥6 字
+        if re.search(re.escape(_t) + r'\s*[（(][^）)]{6,}[）)]', _body):
+            return True
+        # 定义式③：「全称（术语…）」形式
+        #   如「美国会计准则（ASC 820）」「关键审计事项（KAM，Key Audit Matter）」
+        if re.search(r'[A-Za-z0-9\u4e00-\u9fff][A-Za-z0-9\u4e00-\u9fff .&\-]{1,40}'
+                     r'[（(]\s*' + re.escape(_t), _body):
+            return True
+        return False
+
+    _j_hit = [_t for _t in JARGON if _t in _body]
+    _j_miss = [_t for _t in _j_hit if not _term_defined(_t)]
+    if _j_miss:
+        fail("[14] 高风险术语全文无定义式说明：" + "、".join(_j_miss)
+             + " —— 见 qualitative_discipline.md 第八节")
+        print("    FAIL %d 个：%s" % (len(_j_miss), "、".join(_j_miss)))
+        print("    解法①：首现处给「英文原文 + 中文直译 + 本案为何适用」")
+        print("    解法②：集中加「术语注解」区块，每条写成「术语：中文解释（附原文引述）」")
+    elif _j_hit:
+        print("    OK 命中 %d 个高风险术语，均有定义式说明：%s" % (len(_j_hit), "、".join(_j_hit)))
+    else:
+        print("    OK 未出现高风险术语")
+
+    # ---------- 15. 英文缩写首现是否展开（提示级，不阻塞交付）----------
+    print("\n[15] 英文缩写首现展开检查（提示）")
+    ACR_WL = {
+        "SEC", "IPO", "CEO", "CFO", "COO", "CTO", "AI", "ML", "LLM", "GPU", "CPU", "IT",
+        "US", "USA", "UK", "EU", "HTML", "PDF", "URL", "API", "ID", "OK",
+        "Q1", "Q2", "Q3", "Q4", "H1", "H2", "FY", "YTD", "QOQ", "YOY", "LTM", "CAGR",
+        "EPS", "PE", "PB", "PS", "ROE", "ROA", "ROIC", "TTM", "EBIT", "EBITDA",
+        "GAAP", "IFRS", "ADR", "ETF", "GDP", "CPI", "PMI", "FDI", "M&A",
+        "USD", "RMB", "CNY", "HKD", "EUR", "JPY", "B2B", "B2C",
+        "SaaS", "PaaS", "IaaS", "KPI", "NA", "TBD", "ARR", "GMV", "DAU", "MAU", "ARPU",
+    }
+    _acr = {}
+    for _m in re.finditer(r'(?<![A-Za-z0-9&])([A-Z][A-Z&]{1,5})(?![A-Za-z0-9])', _body):
+        _t = _m.group(1)
+        if _t in ACR_WL:
+            continue
+        _acr.setdefault(_t, _m.start())
+    _unexp = []
+    for _t, _i in sorted(_acr.items(), key=lambda kv: kv[1]):
+        _seg = _body[max(0, _i - 120): _i + 160]
+        # 交易所前缀后的代码（如 NASDAQ: AMZN）视为自解释
+        if re.search(r'(?:NASDAQ|NYSE|AMEX|SSE|SZSE|SEHK|HKEX|TSX|LSE|TSE|Ticker|代码)'
+                     r'\s*[:：]\s*$', _body[max(0, _i - 16): _i]):
+            continue
+        # 紧邻中文括注（任意长度）即视为已说明
+        if re.search(r'[（(][^）)]*[\u4e00-\u9fff][^）)]*[）)]', _seg):
+            continue
+        # 「全称（缩写）」形式：如「美国联邦贸易委员会（FTC）」「Amazon.com（AMZN）」
+        if re.search(r'[A-Za-z0-9\u4e00-\u9fff][A-Za-z0-9\u4e00-\u9fff .&\-]{1,40}'
+                     r'[（(]\s*' + re.escape(_t), _body):
+            continue
+        # 「英文全称（缩写）」形式
+        if re.search(r'[A-Z][A-Za-z]+(?:\s+[A-Za-z&.]+){1,6}\s*[（(]\s*'
+                     + re.escape(_t) + r'\s*[）)]', _body[max(0, _i - 220): _i + 40]):
+            continue
+        # 定义式写法（缩写：中文解释）
+        if re.search(re.escape(_t) + r'\s*[:：—]\s*\S', _body):
+            continue
+        _unexp.append(_t)
+    if _unexp:
+        print("    注意 %d 个缩写首现处未见中文解释或英文全称（不阻塞交付）：" % len(_unexp))
+        print("         " + "、".join(_unexp[:20]) + ("…" if len(_unexp) > 20 else ""))
+        print("    建议：外行读者未必认得，首现处补「英文全称（缩写）」或中文括注")
+    else:
+        print("    OK 未发现未解释的英文缩写")
 
     # ---------- 汇总 ----------
     print("\n" + "=" * 56)
