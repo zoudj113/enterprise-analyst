@@ -20,6 +20,10 @@
    侧栏 `position:sticky`。滚动高亮脚本必须放在**独立的 `<script>` 块**（与 Chart.js 初始化分开），
    否则图表初始化失败会连带导航失效。
 9. `<header id="top">` 提供「回到顶部」锚点。
+10. **页头必带「财年口径」说明**（2026-09-28 新增，`check_report.py [17]`）：美股等可自选财年月份的市场，
+    必须在正文最前面写明**财年截止日**，并给出 **`FY20xx` 标签 ↔ 起止日期**的映射
+    （例：`FY2026 指 2025 年 6 月 1 日至 2026 年 5 月 31 日`）。财年 = 自然年的公司写一句
+    「财年与自然年一致」即可。写法与判定口径见 `pre_write_checklist.md [17]`。
 
 ## 完整骨架（复制即用）
 
@@ -138,8 +142,15 @@ footer{margin-top:48px; padding-top:20px; border-top:1px solid var(--line); font
   <div class="inner">
     <h1>{公司名}（{代码}）分析报告</h1>
     <p class="sub">{公司全称} · {英文名}</p>
+    <!-- 财年口径（[17] 必写）：财年非自然年时改写成真实截止日与 FY 映射；自然年则写「与自然年一致」 -->
+    <div class="note" style="margin:14px 0 0">
+      <b>先看财年口径——不先弄清这一条，后面所有年份都会读错一年。</b>
+      {公司简称}的财年截止日为每年 <b>{M 月 D 日}</b>，<b>{与自然年一致 / 与自然年不一致}</b>。
+      本报告中的 <b>FY2026 指 {YYYY 年 M 月 D 日} 至 {YYYY 年 M 月 D 日}</b>{；相应地 FY2025 指 …，FY2027 Q1 指 …}。全文的年份标签、同比与估值口径均按此定义。
+    </div>
     <div class="meta">
       <span class="tag">报告日期：{YYYY年M月D日}</span>
+      <span class="tag">财年截止：每年 {M 月 D 日}（{非自然年 / 与自然年一致}）</span>
       <span class="tag">财务数据源：{ima 知识库「XX」（xxxx–xxxx 年报、xxxx 中期报告、招股书）}</span>
       <span class="tag">行情数据：公开市场（{日期} 收盘）</span>
       <span class="tag">会计准则：{HKFRS / CAS}（{货币}列示）</span>

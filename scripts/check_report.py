@@ -5,7 +5,7 @@
 用法：
     python scripts/check_report.py <报告文件.html|报告文件.md> [--log 日志文件]
 
-检查项（18 项，脚本内编号 [0]–[15]）：
+检查项（脚本内编号 [0]–[17]，含 [2b] / [10.5]）：
     [0]    文件命名规范（{公司}_分析报告_{YYYYMMDD}.html）
     [1]    HTML 标签闭合
     [2]    表格列数一致性（表头 vs 各数据行）
@@ -33,6 +33,12 @@
     [15]   英文缩写首现展开（提示级，不阻塞）—— 自动抽取全文 2–6 位大写缩写，
            首现处既无中文括注也无「英文全称（缩写）」形式的，列为提示。
            [14][15] 规则详见 references/qualitative_discipline.md 第八节（2026-09-23 新增）
+    [16]   内联脚本跨块重复声明（后声明的块整块 SyntaxError，图表静默不渲染）——2026-09-28 新增
+    [17]   开篇区财年口径标注 —— 美股公司必做（2026-09-28 新增，用户提出）：
+           开篇区（正文起 → 第一个编号章节之前）必须写明**财年截止日**（X 月 Y 日），
+           或明写「财年与自然年一致」；全文使用 FY20xx 标签时，还须在同一句给出
+           「FY20xx ↔ 起止日期」的映射。美股报告（10-K/10-Q/20-F/6-K/US GAAP/EDGAR）
+           或全文出现 FY 标签时缺此项判 FAIL，其他市场仅提示。
 
 退出码：0 = 全部通过；1 = 有 FAIL。
 
@@ -482,7 +488,7 @@ def main():
     # 唐朝四问法（2026-09 升级）：有就是有，没有就是没有。
     # 三项硬检查：巨资测试（④问）、证据表表头、章末明确结论。
     print("\n[10.5] 护城河四问与证据链")
-    pat_th_evd = re.compile(r'<th[^>]*>\s*(财报证据|量化证据|证据链?)\s*(?:<|\|)')
+    pat_th_evd = re.compile(r'<th[^>]*>[^<]*(?:财报证据|量化证据|证据链?)[^<]*<')
     pat_md_evd = re.compile(r'\|\s*(财报证据|量化证据|证据链?)\s*\|')
     has_evd = bool(pat_th_evd.search(html)) or bool(pat_md_evd.search(html))
     has_test = bool(re.search(r'巨资测试|巴菲特测试|挟巨资|10\s*亿美元|100\s*亿美元|10\s*亿美金|100\s*亿美金', html))
@@ -634,8 +640,21 @@ def main():
             return True
         return False
 
+    # 术语注解区块文本（定义式④兜底的依据）
+    _glossary = ''
+    _gm = re.search(r'(术语注解|名词解释|名词表|术语表)[\s\S]{0,8000}', _body)
+    if _gm:
+        _glossary = _gm.group(0)
+
     _j_hit = [_t for _t in JARGON if _t in _body]
     _j_miss = [_t for _t in _j_hit if not _term_defined(_t)]
+    if _j_miss and _glossary:
+        # 定义式④（兜底）：全文存在「术语注解 / 名词解释 / 术语表」区块，
+        # 且该术语在区块内出现 —— 即 docstring 承诺的「区块内被定义」分支。
+        # 教训：2026-09-28 Oracle 报告把 ASC 606 写成「ASC 606 / ASC 842：…」、
+        # VIE 写成「VIE 架构（Variable Interest Entity，可变利益实体）」（术语与括注间夹字），
+        # 前三种定义式全部匹配失败，但两条其实都写在术语注解区块里。
+        _j_miss = [_t for _t in _j_miss if _t not in _glossary]
     if _j_miss:
         fail("[14] 高风险术语全文无定义式说明：" + "、".join(_j_miss)
              + " —— 见 qualitative_discipline.md 第八节")
@@ -692,6 +711,104 @@ def main():
         print("    建议：外行读者未必认得，首现处补「英文全称（缩写）」或中文括注")
     else:
         print("    OK 未发现未解释的英文缩写")
+
+    # ---------- 16. 内联脚本重复声明（图表静默失效）----------
+    # 教训：2026-09-28 Oracle 报告把 Chart.js 初始化拆成多个 <script> 块，
+    # 每块开头都写了 const F = {...}；同为顶层作用域 → 后一块整块 SyntaxError，
+    # 图 4–6 完全不渲染，而 canvas/注册配对检查（[3]）看不出任何异常。
+    print("\n[16] 内联脚本重复声明检查")
+    if is_html:
+        _blocks = re.findall(r'<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)</script>', html, re.I)
+        _decl = {}
+        for _bi, _b in enumerate(_blocks):
+            for _dm in re.finditer(r'(?m)^\s*(?:const|let|class)\s+([A-Za-z_$][\w$]*)\s*[={]', _b):
+                _decl.setdefault(_dm.group(1), set()).add(_bi)
+        _dup = {k: sorted(v) for k, v in _decl.items() if len(v) > 1}
+        if _dup:
+            fail("[16] 顶层 const/let/class 在内联脚本块间重复声明（后声明的块会整块 SyntaxError，"
+                 "浏览器控制台报 'Identifier ... has already been declared'）："
+                 + "、".join(f"{k}(第{','.join(str(i + 1) for i in v)}块)" for k, v in _dup.items()))
+            print("    FAIL 重复声明："
+                  + "、".join(f"{k} 出现于第 {','.join(str(i + 1) for i in v)} 个内联脚本块"
+                              for k, v in _dup.items()))
+            print("    解法：把 Chart.defaults 等公共初始化只保留在第一个块，或改用 var / IIFE 包裹")
+        else:
+            print(f"    OK {len(_blocks)} 个内联脚本块，无跨块重复的顶层声明")
+
+    # ---------- 17. 开篇区财年口径标注 ----------
+    # 需求来源（用户 2026-09-28 提出）：「分析美国上市公司时，在最开始标注出『财年』，
+    # 因为很多公司的财年不是自然年」。
+    # 为什么必须写在最前面：读者看到 FY2026 会默认它是 2026 自然年。甲骨文财年截止 5 月 31 日，
+    # FY2026 实际覆盖 2025-06-01 ~ 2026-05-31；不先声明，读者会把每一个年份、每一个同比、
+    # 每一个估值倍数整体错位一年，而报告内部自洽、无从自查。
+    print("\n[17] 开篇区财年口径标注")
+    # 开篇区 = 正文起 → 第一个编号章节（<h2 id="s1">）之前；取不到则退化为前 15000 字符。
+    # 必须先剔除脚本 / 样式 / **侧边目录**：目录里有「核心财务指标」这类章节名，
+    # 其中的「指」会被当成映射连接词，与页头「行情数据：2026 年 9 月 25 日收盘」拼成假命中。
+    _zone = ''
+    if is_html:
+        _m1 = re.search(r'<h2[^>]*\bid="s1"', html)
+        _zsrc = html[: _m1.start()] if _m1 else html[:15000]
+        _zsrc = re.sub(r'<(script|style|nav|aside)[\s\S]*?</\1>', ' ', _zsrc, flags=re.I)
+        _zone = re.sub(r'<[^>]*>', ' ', _zsrc)
+    else:
+        _zone = html[:6000]
+    _zone = re.sub(r'\s+', ' ', _zone).replace('&nbsp;', ' ')
+
+    # 硬标志：美股报告（或任何可自选财年月份的市场）→ 缺标注判 FAIL；A 股等仅提示
+    _fy_hard = bool(re.search(r'10-K|10-Q|20-F|6-K|US GAAP|EDGAR', _body))
+    _fy_used = bool(re.search(r'FY\s*20\d{2}', _body))
+    _fy_end = (re.search(r'财年[^。；\n]{0,60}?\d{1,2}\s*月\s*\d{1,2}\s*日', _zone)
+               or re.search(r'财年[^。；\n]{0,60}?\d{4}\s*[-/]\s*\d{1,2}\s*[-/]\s*\d{1,2}', _zone))
+    _fy_cal = re.search(r'财年[^。；\n]{0,12}?(?:即|就是|与|和)?\s*自然年', _zone)
+    # FY 标签 ↔ 日期区间映射：只在全文确实用了 FY 标签时才要求。
+    # 判定取「同窗三要素」：标签**之后** ≤150 字内同时出现
+    #   ① 明确日期（月日式，或 ISO 起止区间）② 连接词（指/即/截至/截止/= …）
+    # 两个已踩的误判：
+    #   - 只查「附近有没有日期」→ 页头「财务数据源：…FY2022–FY2026…」与「行情数据：2026 年 9 月
+    #     25 日收盘」相隔不到 150 字，会被当成已映射；
+    #   - 把「财年」也算连接词并允许向前取 40 字 → 会被「报告日期：2026 年 9 月 28 日」+
+    #     页头「财年截止日为每年 5 月 31 日」凑成假命中。
+    # 因此只向**后**取窗口，且连接词不含「财年」。
+    _fy_map = ''
+    if _fy_used:
+        _date_ok = re.compile(
+            r'\d{1,2}\s*月\s*\d{1,2}\s*日'
+            r'|\d{4}\s*[-/]\s*\d{1,2}\s*[-/]\s*\d{1,2}\s*(?:至|到|~|～|—|–)\s*'
+            r'\d{4}\s*[-/]\s*\d{1,2}\s*[-/]\s*\d{1,2}')
+        _link_ok = re.compile(r'指|即|对应|截至|截止|起止|等于|＝|=|至|到')
+        for _m in re.finditer(r'FY\s*20\d{2}', _zone):
+            _win = _zone[_m.start(): _m.start() + 150]
+            if _date_ok.search(_win) and _link_ok.search(_win):
+                _fy_map = _m.group(0)
+                break
+    _fy_msg = ("开篇区写一行「财年口径」：① 财年截止日（X 月 Y 日），与自然年一致就明写；"
+               "② 全文用到 FY20xx 标签时，同句给出标签↔日期区间映射 —— "
+               "例：「本公司财年截止日为每年 5 月 31 日（非自然年）。FY2026 指 2025 年 6 月 1 日"
+               "至 2026 年 5 月 31 日的财年。」")
+    if not (_fy_end or _fy_cal):
+        print("    FAIL 开篇区无「财年截止 X 月 Y 日」或「财年与自然年一致」" if _fy_hard
+              else "    注意 开篇区无「财年截止 X 月 Y 日」或「财年与自然年一致」（非美股报告，不阻塞）")
+        if _fy_hard:
+            fail("[17] 开篇区未见财年口径标注（美股报告必写：财年截止日 + FY 标签与日期区间对应）"
+                 " —— 见 pre_write_checklist.md [17]")
+        print("    解法：" + _fy_msg)
+    elif _fy_used and not _fy_map:
+        print("    FAIL 有财年截止日，但全文用了 FY 标签而开篇区未给日期区间映射" if _fy_hard
+              else "    注意 全文用了 FY 标签但未给日期区间映射（非美股报告，不阻塞）")
+        if _fy_hard:
+            fail("[17] 未把 FY 标签映射到日期区间（全文出现 FY20xx，但开篇区没有"
+                 "「FY20xx 指 YYYY-MM-DD 至 YYYY-MM-DD」这类映射）—— 见 pre_write_checklist.md [17]")
+        print("    解法：" + _fy_msg)
+    else:
+        _hit = []
+        if _fy_end:
+            _hit.append("财年截止日")
+        if _fy_cal:
+            _hit.append("与自然年一致")
+        if _fy_map:
+            _hit.append(f"FY 标签映射（{_fy_map}）")
+        print(f"    OK 开篇区已标注财年口径：{'、'.join(_hit)}")
 
     # ---------- 汇总 ----------
     print("\n" + "=" * 56)
