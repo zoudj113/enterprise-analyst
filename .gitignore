@@ -1,0 +1,19 @@
+# Python 运行时缓存
+# __pycache__ 每次执行脚本都会重新生成，内容是平台+Python 版本相关的字节码，
+# 进版本库只会带来"跑一次脚本就多一个二进制 diff"的噪音，且对跨机器复用毫无价值。
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# 虚拟环境（本 skill 约定用 WorkBuddy 的托管 venv，不在仓库内建环境）
+.venv/
+venv/
+
+# 操作系统 / 编辑器杂项
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+.idea/
+.vscode/
