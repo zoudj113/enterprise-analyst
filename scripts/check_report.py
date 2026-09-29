@@ -5,7 +5,7 @@
 用法：
     python scripts/check_report.py <报告文件.html|报告文件.md> [--log 日志文件]
 
-检查项（脚本内编号 [0]–[17]，含 [2b] / [10.5]）：
+检查项（脚本内编号 [0]–[18]，含 [2b] / [10.5]）：
     [0]    文件命名规范（{公司}_分析报告_{YYYYMMDD}.html）
     [1]    HTML 标签闭合
     [2]    表格列数一致性（表头 vs 各数据行）
@@ -39,6 +39,12 @@
            或明写「财年与自然年一致」；全文使用 FY20xx 标签时，还须在同一句给出
            「FY20xx ↔ 起止日期」的映射。美股报告（10-K/10-Q/20-F/6-K/US GAAP/EDGAR）
            或全文出现 FY 标签时缺此项判 FAIL，其他市场仅提示。
+    [18]   分红与回购表版式 —— 必须「指标为行、期间为列」（2026-09-29 新增，用户提出）：
+           「融资与分红」章节内，表头首格为「财年/年度/年份/期间」且其后 ≥2 格是
+           指标名（回购/分红/股息/返还/金额/股数…）、其中至少 1 格沾分红或回购的，
+           属「财年做行、指标做列」的横向版式，判 FAIL。
+           理由：同一技能产出的报告曾出现两种方向，读者每换一张表都要重新找轴。[4] 抓不到这种表
+           （表头里只有「财年」二字、没有 20xx 期间 token，期间数 <2 被跳过）。
 
 退出码：0 = 全部通过；1 = 有 FAIL。
 
@@ -809,6 +815,102 @@ def main():
         if _fy_map:
             _hit.append(f"FY 标签映射（{_fy_map}）")
         print(f"    OK 开篇区已标注财年口径：{'、'.join(_hit)}")
+
+    # ---------- 18. 分红与回购表版式（必须「指标为行、期间为列」） ----------
+    # 需求来源（用户 2026-09-29 提出）：同一份技能产出的报告里，「分红与回购」表的行列方向不稳定——
+    # 有的报告把「财年」横铺在表头（横向版式：财年 | 回购金额 | 回购股数 | 每股分红 | …），
+    # 有的把指标横铺在表头（纵向版式：项目 | FY2025 | FY2024 | …）。定稿统一为后者：
+    # 左列写指标名、表头写期间且最新期在最左，与核心财务指标表、资产负债表等章节方向一致，
+    # 读者才能沿同一个方向扫读。
+    # 注：[4] 抓不到横向版式——那种表的表头里只有「财年」两个字、没有 20xx 期间 token，
+    # 期间数 < 2 直接被跳过，所以必须单独检查。
+    print("\n[18] 分红与回购表版式（指标为行、期间为列）")
+    _PERIOD_HEAD_RE = re.compile(
+        r'^\s*(?:财年|年度|年份|期间|年度[/／]期间|Fiscal\s*Year|Year|Period)'
+        r'\s*(?:[（(][^）)]*[）)])?\s*$', re.I)
+    _METRIC_RE = re.compile(r'回购|分红|股息|派息|股利|返还|支付率|分红率|金额|股数|均价|额度|现金流')
+    # 「核心词」限定：必须真的沾分红/回购，否则「财年 | 收入 | 净利润 | 经营现金流 | 自由现金流」
+    # 这类凑巧有两个 broad 命中的表会被误判。
+    _CORE_RE = re.compile(r'回购|分红|股息|派息|股利|返还')
+    _fin_zone = ''
+    _fin_how = ''
+    if is_html:
+        _h2s = list(re.finditer(r'<h2[^>]*>[\s\S]*?</h2>', html, re.I))
+        for _i, _m in enumerate(_h2s):
+            _t = re.sub(r'<[^>]*>', '', _m.group(0))
+            if '融资' in _t and '分红' in _t:
+                _fin_zone = html[_m.end(): (_h2s[_i + 1].start() if _i + 1 < len(_h2s) else len(html))]
+                _fin_how = re.sub(r'^[一二三四五六七八九十]+\s*[、.．]?\s*', '', _t).strip()
+                break
+    else:
+        _all = html.splitlines()
+        _st = None
+        for _i, _ln in enumerate(_all):
+            if re.match(r'^#{1,4}\s', _ln) and '融资' in _ln and '分红' in _ln:
+                _st = _i + 1
+                _fin_how = _ln.strip()
+                break
+        if _st is not None:
+            _en = len(_all)
+            for _j in range(_st, len(_all)):
+                if re.match(r'^#{1,4}\s', _all[_j]):
+                    _en = _j
+                    break
+            _fin_zone = '\n'.join(_all[_st:_en])
+
+    _bad_layout = []
+    if _fin_zone:
+        def _is_bad(heads):
+            """表头首格是期间、且其后 ≥2 格是指标（其中至少 1 格沾分红/回购）→ 横向版式。"""
+            if not heads or not _PERIOD_HEAD_RE.match(heads[0]):
+                return False
+            rest = heads[1:]
+            return (len([x for x in rest if _METRIC_RE.search(x)]) >= 2
+                    and any(_CORE_RE.search(x) for x in rest))
+
+        if is_html:
+            for _tb in re.findall(r'<table>([\s\S]*?)</table>', _fin_zone):
+                _hm = re.search(r'<thead>[\s\S]*?</thead>', _tb)
+                if not _hm:
+                    continue
+                _ths = [re.sub(r'<[^>]*>', '', x).strip()
+                        for x in re.findall(r'<th[^>]*>([\s\S]*?)</th>', _hm.group(0))]
+                if not _ths:
+                    continue
+                if _is_bad(_ths):
+                    _bad_layout.append(' | '.join(_ths))
+        else:
+            _blocks, _cur = [], []
+            for _ln in _fin_zone.splitlines():
+                if _ln.strip().startswith('|'):
+                    _cur.append(_ln)
+                elif _cur:
+                    _blocks.append(_cur); _cur = []
+            if _cur:
+                _blocks.append(_cur)
+            for _b in _blocks:
+                if len(_b) < 2:
+                    continue
+                _ths = [c.strip() for c in _b[0].strip().strip('|').split('|')]
+                if not _ths:
+                    continue
+                if _is_bad(_ths):
+                    _bad_layout.append(' | '.join(_ths))
+
+    if not _fin_zone:
+        print("    注意 未定位到「融资与分红」章节标题（[5] 已单独校验该章节是否存在），跳过本项")
+    elif _bad_layout:
+        _fix = ("把表头翻转——左列写指标名（每股股息 / 股息支付总额 / 股份回购金额 / 回购股数 / "
+                "分红+回购合计 / 合计 ÷ 当年净利润 / 合计 ÷ 当年经营现金流），表头写期间且最新期在最左；"
+                "拆股等口径变化另起一行，不要靠加列承载。版式片段见 "
+                "references/html_report_template.md「融资与分红章节版式」")
+        for _h in _bad_layout:
+            fail("[18] 分红与回购表用了「财年做行、指标做列」的横向版式（应改为指标做行、期间做列、"
+                 "最新期在最左）：" + _h)
+            print(f"    FAIL {_h}")
+        print("    解法：" + _fix)
+    else:
+        print(f"    OK {_fin_how or '融资与分红章节'} 内表格均为「指标为行、期间为列」")
 
     # ---------- 汇总 ----------
     print("\n" + "=" * 56)
