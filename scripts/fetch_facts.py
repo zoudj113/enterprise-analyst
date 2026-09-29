@@ -41,6 +41,13 @@ fetch_facts.py — SEC XBRL 多年财务序列抓取（enterprise-analyst 分支
      正确做法是两者都留：出表用最新值（坑 4），同时把同期间的全部观测交给
      cross_verify() 比对，不一致就报警。**一致本身也是结论**——说明该数字在后续
      年报里被原样重申，序列可信度有独立支撑。
+  7. **金额类科目不能按「--scale」决定小数位，必须按数值量级**（2026-09-29 新增）。
+     旧版 `fmt()` 对 `scale == "raw"` 一律用 `"{:,.0f}"`，会把**每股**类科目
+     四舍五入成整数：德州仪器 2025 年每股分红 5.50 被印成「6」、2004 年 0.089 被印成「0」。
+     JSON（--json）里数值是对的，所以**只看控制台表格会被静默误导**——而这正是
+     做「连续 N 年分红」这类逐年对比表时最容易全表报废的地方。
+     现按 `abs(v)` 分档：<1 → 4 位去尾零；<1000 → 2 位；≥1000 → 取整。
+     若引用每股 / 单位成本类数字，仍应回 `--json` 或年报原文复核。
 """
 import argparse
 import json
@@ -322,13 +329,25 @@ def cross_verify(durations, years, scale):
 
 
 def fmt(v, scale, is_money):
+    """数值格式化。
+
+    坑 7（2026-09-29 修）：**不能按 scale 决定小数位，必须按数值量级**。
+    旧实现 `scale == "raw"` → "{:,.0f}"，会把「每股」类科目四舍五入成整数：
+    德州仪器 2025 年每股分红 5.50 被印成「6」、2004 年 0.089 被印成「0」，
+    而 JSON 里是对的 —— 只看控制台表格会得到完全错误的每股数据（教训：TXN 分红表）。
+    """
     if v is None:
         return "—"
     if not is_money:
         return "%.2f" % v
-    if scale == "raw":
-        return "{:,.0f}".format(v)
-    return ("{:,.0f}" if scale == "mn" else "{:,.2f}").format(v / SCALES[scale])
+    if scale != "raw":
+        v = v / SCALES[scale]
+    a = abs(v)
+    if a < 1:                      # 极小值（如每股分红 0.089）保留 4 位并去掉尾零
+        return "{:,.4f}".format(v).rstrip("0").rstrip(".")
+    if a < 1000:                   # 每股类小额（EPS / 每股分红 / 单位成本）保留 2 位
+        return "{:,.2f}".format(v)
+    return "{:,.0f}".format(v)     # 百万级以上金额取整，避免长串小数
 
 
 def main():
