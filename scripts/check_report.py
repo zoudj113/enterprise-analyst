@@ -2,6 +2,11 @@
 """
 企业分析报告交付前自检（enterprise-analyst Step 3.5）
 
+⚠️ **本脚本是「格式 lint」，不是「规范符合度审计」——通过不等于符合规范。**
+   它匹配的是**字符串与标签**，因此一份缺独立估值章、6.1 未做五类压缩、风险章没有三层结构的
+   报告，同样可以 21 项全绿（2026-10-12 三环集团报告真实事故）。
+   **规范符合度必须由 scripts/spec_audit.py（Step 3.6）独立判定；两个都跑过才可交付。**
+
 用法：
     python scripts/check_report.py <报告文件.html|报告文件.md> [--log 日志文件]
 
@@ -915,7 +920,9 @@ def main():
     # ---------- 汇总 ----------
     print("\n" + "=" * 56)
     if not FAILED:
-        print("全部检查通过 —— 可以交付")
+        print("格式检查全部通过 —— 但**这不等于符合规范**")
+        print("  → 还须运行: python scripts/spec_audit.py <同一份报告>")
+        print("    （本脚本只查格式；规范的强制产出物由 spec_audit.py 核验）")
         return 0
     print(f"发现 {len(FAILED)} 个问题：")
     for f in FAILED:
