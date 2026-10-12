@@ -635,6 +635,22 @@ def _(raw, is_html):
     return True, "经营现金流与利润匹配度分析齐全", ""
 
 
+@check("IDX-1", "SPEC_INDEX.md", "FAIL", "索引台账与 references/ 实际文件一致")
+def _(raw, is_html):
+    idx = REFS_DIR / "SPEC_INDEX.md"
+    if not idx.is_file():
+        return False, "references/SPEC_INDEX.md 不存在（Step 0.5 的装载入口缺失）", ""
+    listed = set(re.findall(r"^\|\s*\d+\s*\|\s*`([^`]+\.md)`",
+                            idx.read_text(encoding="utf-8"), re.M))
+    disk = {p.name for p in REFS_DIR.glob("*.md")}
+    miss = sorted(disk - listed)      # 磁盘有、索引没列 → 会被漏读
+    extra = sorted(listed - disk)     # 索引列了、磁盘没有 → 索引过期
+    if miss or extra:
+        return False, ("索引与磁盘不一致 —— 磁盘有而索引未列（会漏读）：" + ("、".join(miss) or "无") +
+                       "；索引列出而磁盘不存在（索引过期）：" + ("、".join(extra) or "无")), ""
+    return True, f"索引 {len(listed)} 行 = references/ {len(disk)} 个文件，无遗漏", ""
+
+
 def main():
     argv = sys.argv[1:]
     if not argv:
