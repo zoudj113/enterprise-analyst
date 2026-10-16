@@ -50,6 +50,14 @@
            属「财年做行、指标做列」的横向版式，判 FAIL。
            理由：同一技能产出的报告曾出现两种方向，读者每换一张表都要重新找轴。[4] 抓不到这种表
            （表头里只有「财年」二字、没有 20xx 期间 token，期间数 <2 被跳过）。
+    [19]   表格列宽失衡（num-c / th 不可换行挤扁其它列）—— 2026-10-16 新增：
+           模板 CSS 中 th 与 .num-c 均为 white-space:nowrap，这两类单元格内容不会折行。
+           往 num-c 单元格写中文长句（半句话、结论句）会把该列撑到接近整表宽度，把同表其它
+           文本列——尤其表头只有 2–3 个字的「判读 / 说明 / 备注」列——压成一个竖条。
+           判法：按报告 CSS 推算表格可用宽度，用全角/半角估算各列 preferred / min-content 宽度，
+           模拟浏览器列宽分配；文本列最终宽度不足其内容所需 42% 的，判 FAIL。
+           教训（2026-10-16 泡泡玛特报告）：55 字长句写进 FY2026H1 这一 num-c 列，
+           「判读」列被压到只剩表头宽度，23 字正文竖排 5 行。脚本此前查不出此项。
 
 退出码：0 = 全部通过；1 = 有 FAIL。
 
@@ -916,6 +924,122 @@ def main():
         print("    解法：" + _fix)
     else:
         print(f"    OK {_fin_how or '融资与分红章节'} 内表格均为「指标为行、期间为列」")
+
+    # ---------- 19. 表格列宽失衡（num-c 不可换行挤扁其它列）----------
+    # 规则源：references/html_report_template.md 的模板 CSS ——
+    #   th{white-space:nowrap} 与 .num-c{white-space:nowrap} 这两类单元格内容不会折行，
+    #   所以往 num-c 里写中文长句，会把该列撑到接近整表宽度，同表其它文本列被压成竖条。
+    # 教训（2026-10-16 泡泡玛特报告）：55 字长句写进 class="num-c" 的 FY2026H1 列，
+    #   表头仅 2 字的「判读」列被压到只剩表头宽度、正文竖排 5 行。此前无脚本可查。
+    print("\n[19] 表格列宽失衡（num-c / th 不可换行）")
+
+    def _txt_w(_s):
+        """估算文本渲染宽度（px）：全角 = font-size 13.5，半角 = 7.3，空格 = 3.8。"""
+        _tot = 0.0
+        for _ch in _s:
+            if ord(_ch) > 0x2E80:
+                _tot += 13.5
+            elif _ch == ' ':
+                _tot += 3.8
+            else:
+                _tot += 7.3
+        return _tot
+
+    def _minw(_s):
+        """min-content 宽度：中文可任意断行，取最长不可断的连续半角片段。"""
+        _runs = re.findall(r'[0-9A-Za-z.%,+\-/]+', _s)
+        return max([_txt_w(_r) for _r in _runs] + [13.5])
+
+    if is_html:
+        _avail = 944.0                    # 兜底：1240 - 2×24(padding) - 212(侧栏) - 36(gap)
+        _lm = re.search(r'\.layout\s*\{[^}]*\}', html)
+        if _lm:
+            _csstx = _lm.group(0)
+            _a1 = re.search(r'max-width:\s*(\d+)px', _csstx)
+            _a2 = re.search(r'padding:\s*0\s+(\d+)px', _csstx)
+            _a3 = re.search(r'grid-template-columns:\s*(\d+)px', _csstx)
+            _a4 = re.search(r'gap:\s*(\d+)px', _csstx)
+            if _a1 and _a2 and _a3 and _a4:
+                _avail = (float(_a1.group(1)) - 2 * float(_a2.group(1))
+                          - float(_a3.group(1)) - float(_a4.group(1)))
+        _ca = re.compile(r'<(td|th)\b([^>]*)>([\s\S]*?)</\1>')
+        _alg_fail, _alg_note = [], []
+        for _tbl in re.findall(r'<table>[\s\S]*?</table>', html):
+            _thd = re.search(r'<thead>[\s\S]*?</thead>', _tbl)
+            if not _thd:
+                continue
+            _hcells = _ca.findall(_thd.group(0))
+            if len(_hcells) < 3:
+                continue                              # 两列表不存在被挤压的余地
+            _names = [re.sub(r'<[^>]*>', '', _x[2]).strip() for _x in _hcells]
+            _isnc = ['num-c' in _x[1] for _x in _hcells]
+            if not any(_isnc):
+                continue                              # 没有不可换行的数值列，浏览器能自行平衡
+            if '<colgroup>' in _tbl:
+                continue                              # 已显式声明列宽，不再推断
+            _rowsv = []
+            for _trv in re.findall(r'<tr>([\s\S]*?)</tr>', _tbl[_tbl.find('</thead>'):]):
+                _cd = re.findall(r'<td\b([^>]*)>([\s\S]*?)</td>', _trv)
+                if len(_cd) != len(_names):
+                    continue
+                _rowsv.append([(re.sub(r'<[^>]*>', '', _y[1]).strip(), 'num-c' in _y[0])
+                               for _y in _cd])
+            if not _rowsv:
+                continue
+            _pfv, _mfv = [], []
+            for _jv in range(len(_names)):
+                _celltxts = [_names[_jv]] + [_r[_jv][0] for _r in _rowsv]
+                _p = max(_txt_w(_z) for _z in _celltxts)
+                _m = _txt_w(_names[_jv])              # th 不可换行，表头即其最小宽度
+                _pnc = _txt_w(_names[_jv]) if _isnc[_jv] else 0.0
+                for _r in _rowsv:
+                    _tt, _nn = _r[_jv]
+                    if _nn or _isnc[_jv]:
+                        _m = max(_m, _p)              # num-c 完全不可换行
+                    if _nn:
+                        _pnc = max(_pnc, _txt_w(_tt))
+                _pfv.append(_p)
+                _mfv.append(_m)
+                # 只对「不可换行的单元格本身」过长报警：同一列里可换行的长句（如「未取到可比数据…」）
+                # 不会撑宽列，不算问题
+                if _isnc[_jv] and _pnc > 240:
+                    _alg_note.append(
+                        "表头 [%s] 的数值列「%s」有不可换行的单元格估算宽度 %.0fpx"
+                        "（>240px，约半张表宽），建议缩短内容或把它移出 num-c 列"
+                        % (' | '.join(_names), _names[_jv], _pnc))
+            _s1, _s2 = sum(_mfv), sum(_pfv)
+            if _s1 <= _avail:
+                _left = _avail - _s1
+                _den = _s2 - _s1
+                _colw = [_mfv[_k1] + (_left * (_pfv[_k1] - _mfv[_k1]) / _den if _den else 0.0)
+                         for _k1 in range(len(_names))]
+            else:
+                _scale = _avail / _s1
+                _colw = [_z * _scale for _z in _mfv]
+            for _jv in range(len(_names)):
+                if _isnc[_jv] or _pfv[_jv] < 100:
+                    continue
+                if _colw[_jv] < 0.42 * _pfv[_jv]:
+                    _who = max(range(len(_names)),
+                               key=lambda _z: _pfv[_z] if _isnc[_z] else -1)
+                    _alg_fail.append(
+                        "表头 [%s] 的「%s」列估算只能拿到 %.0fpx，不足其内容所需 %.0fpx 的 %.0f%%，"
+                        "正文会被折成多行；元凶是不可换行的数值列「%s」（独占 %.0fpx）"
+                        % (' | '.join(_names), _names[_jv], _colw[_jv], _pfv[_jv],
+                           _colw[_jv] / _pfv[_jv] * 100, _names[_who], _pfv[_who]))
+        if _alg_fail:
+            for _bm in _alg_fail:
+                fail("[19] 表格列宽失衡（num-c 列不可换行挤扁其它列）：" + _bm)
+                print(f"    FAIL {_bm}")
+            print("    解法：① num-c 只放短数值 token（-7.5% / 123.3 天），定性长句移到无 class 的 "
+                  "<td>（可换行）或表外段落；② 给该表加 <colgroup><col style=\"width:28%\">…"
+                  "</colgroup> 显式钉住列宽（见 11.2 信号表示例）")
+        else:
+            print("    OK 各表列宽分配合理，未见 num-c 长文本挤扁其它列")
+        for _nt in _alg_note:
+            print(f"    注意 {_nt}")
+    else:
+        print("    （非 HTML 报告跳过本项）")
 
     # ---------- 汇总 ----------
     print("\n" + "=" * 56)
